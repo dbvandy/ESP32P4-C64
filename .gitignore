@@ -1,0 +1,10 @@
+.pio/
+build-crowpanel/
+**/__pycache__/
+*.bin
+*.elf
+*.map
+.DS_Store
+Thumbs.db
+# Nested clone — CrowPanel port lives at github.com/dbvandy/ESP32P4-C64
+T-HMI-C64/
