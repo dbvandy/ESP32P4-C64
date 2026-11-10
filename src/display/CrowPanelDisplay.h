@@ -19,7 +19,9 @@ private:
   void drawKeyboardOverlay();
   void drawFileBrowserOverlay();
   void drawDirBrowserOverlay();
-  void drawKeyGlyph(int x, int y, const char *label, uint16_t fg, uint16_t bg);
+  void drawSetupOverlay();
+  void drawKeyGlyph(int x, int y, const char *label, uint16_t fg, uint16_t bg,
+                    int scale = 1);
   void drawPortraitButton(int px, int py, int pw, int ph, const char *label,
                           uint16_t face, uint16_t ink);
 

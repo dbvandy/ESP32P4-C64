@@ -5,10 +5,13 @@
 #ifdef USE_CROWPANEL_DISPLAY
 
 #include "CrowPanelDisplay.h"
+#include "C64LogoBitmap.h"
 #include "CrowPanelDirBrowser.h"
 #include "CrowPanelFileBrowser.h"
 #include "CrowPanelHw.h"
 #include "CrowPanelKeyLayout.h"
+#include "CrowPanelSetup.h"
+#include "CrowPanelSoftPad.h"
 #include "../roms/charset.h"
 #include "board_config.h"
 #include "esp_panel_board_custom_conf.h"
@@ -17,6 +20,7 @@
 #include <Arduino.h>
 #include <ESP_Panel_Library.h>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <esp_heap_caps.h>
 
@@ -256,14 +260,16 @@ static void drawChar8Rot90CCW(uint16_t *fb, int cx, int cy, uint8_t ch,
 }
 
 void CrowPanelDisplay::drawKeyGlyph(int x, int y, const char *label,
-                                    uint16_t fg, uint16_t bg) {
+                                    uint16_t fg, uint16_t bg, int scale) {
   uint16_t *fb = CrowPanelHw::framebuffer();
   if (!fb || !label) {
     return;
   }
+  if (scale < 1) {
+    scale = 1;
+  }
   // Labels are rotated 90° CCW. Portrait left→right == landscape −Y, so
   // advance upward in the framebuffer for upright reading.
-  int scale = 1;
   int len = (int)strlen(label);
   int advance = 8 * scale + 1;
   int total = len * advance;
@@ -432,6 +438,132 @@ void CrowPanelDisplay::drawDirBrowserOverlay() {
                      ink);
 }
 
+void CrowPanelDisplay::drawSetupOverlay() {
+  using namespace CrowPanelSetup;
+  uint16_t *fb = CrowPanelHw::framebuffer();
+  if (!fb) {
+    return;
+  }
+  // iPhone sheet in portrait key-space → 90° CCW on the landscape strip.
+  const uint16_t ink = 0x1082;
+  const uint16_t card = 0xF79E;     // #F2F2F7
+  const uint16_t cardEdge = 0xC618;
+  const uint16_t rowBg = 0xFFFF;
+  const uint16_t trackEmpty = 0xE71C;
+  const uint16_t fillB = 0x3D7F;
+  const uint16_t fillV = 0xFD20;
+  const uint16_t knob = 0xFFFF;
+  const uint16_t knobEdge = 0x8410;
+  const uint16_t closeBg = 0xCE79;
+
+  auto p2fb = [](int px, int py, int pw, int ph, int &x, int &y, int &w,
+                 int &h) {
+    CrowPanelSoftPad::portraitToFb(px, py, x, y);
+    int x1, y1;
+    CrowPanelSoftPad::portraitToFb(px + pw - 1, py + ph - 1, x1, y1);
+    int bx = x < x1 ? x : x1;
+    int by = y < y1 ? y : y1;
+    w = (x > x1 ? x : x1) - bx + 1;
+    h = (y > y1 ? y : y1) - by + 1;
+    x = bx;
+    y = by;
+  };
+
+  auto fillRoundRectFb = [&](int bx, int by, int bw, int bh, int rr,
+                             uint16_t fill, uint16_t edge) {
+    if (rr * 2 > bw) {
+      rr = bw / 2;
+    }
+    if (rr * 2 > bh) {
+      rr = bh / 2;
+    }
+    if (rr < 2) {
+      rr = 2;
+    }
+    fillRect(fb, bx + rr, by, bw - 2 * rr, bh, fill);
+    fillRect(fb, bx, by + rr, bw, bh - 2 * rr, fill);
+    fillCircle(fb, bx + rr, by + rr, rr, fill);
+    fillCircle(fb, bx + bw - 1 - rr, by + rr, rr, fill);
+    fillCircle(fb, bx + rr, by + bh - 1 - rr, rr, fill);
+    fillCircle(fb, bx + bw - 1 - rr, by + bh - 1 - rr, rr, fill);
+    fillRect(fb, bx + rr, by, bw - 2 * rr, 1, edge);
+    fillRect(fb, bx + rr, by + bh - 1, bw - 2 * rr, 1, edge);
+    fillRect(fb, bx, by + rr, 1, bh - 2 * rr, edge);
+    fillRect(fb, bx + bw - 1, by + rr, 1, bh - 2 * rr, edge);
+  };
+
+  int px, py, pw, ph;
+  panelPortrait(px, py, pw, ph);
+  int x, y, w, h;
+  p2fb(px, py, pw, ph, x, y, w, h);
+
+  fillRoundRectFb(x + 3, y + 4, w, h, 18, 0x4208, 0x4208);
+  fillRoundRectFb(x, y, w, h, 18, card, cardEdge);
+
+  // Portrait-top maps to the left edge of the FB card after 90° CCW.
+  drawKeyGlyph(x + 22, y + h / 2, "Setup", ink, card, 2);
+
+  const int inset = 12;
+  fillRoundRectFb(x + 44, y + inset, w - 44 - inset, h - 2 * inset, 12, rowBg,
+                  cardEdge);
+
+  auto drawSlider = [&](void (*trackFn)(int &, int &, int &, int &),
+                        uint8_t value, uint8_t maxv, uint16_t fill,
+                        const char *title) {
+    int tx, ty, tw, th;
+    trackFn(tx, ty, tw, th);
+    int sx, sy, sw, sh;
+    p2fb(tx, ty, tw, th, sx, sy, sw, sh);
+
+    // Label above the slider in portrait space (smaller py than the track).
+    int lpx = tx + tw / 2;
+    int lpy = ty - 14;
+    if (lpy < py + 4) {
+      lpy = py + 4;
+    }
+    int lx, ly;
+    CrowPanelSoftPad::portraitToFb(lpx, lpy, lx, ly);
+    drawKeyGlyph(lx, ly, title, ink, rowBg, 1);
+
+    // Portrait-horizontal track → slim vertical pill on screen (90° CCW).
+    const int rr = sw / 2;
+    fillRoundRectFb(sx, sy, sw, sh, rr < 2 ? 2 : rr, trackEmpty, trackEmpty);
+    int filled = (int)((uint32_t)value * (uint32_t)sh / (uint32_t)maxv);
+    if (filled < sw) {
+      filled = (value > 0) ? sw : 0;
+    }
+    if (filled > 0) {
+      // Portrait +X maps to screen −Y, so fill grows upward from bottom.
+      int fy0 = sy + sh - filled;
+      fillRoundRectFb(sx, fy0, sw, filled, rr < 2 ? 2 : rr, fill, fill);
+    }
+    int ky = sy + sh - filled;
+    if (ky < sy) {
+      ky = sy;
+    }
+    if (ky > sy + sh - 1) {
+      ky = sy + sh - 1;
+    }
+    const int kr = sw / 2 + 5;
+    fillCircle(fb, sx + sw / 2, ky, kr, knobEdge);
+    fillCircle(fb, sx + sw / 2, ky, kr - 1, knob);
+  };
+
+  drawSlider(brightTrackPortrait, brightness(), 100, fillB, "Bright");
+  drawSlider(volTrackPortrait, volume(), 255, fillV, "Volume");
+
+  {
+    int qx, qy, qw, qh, cx, cy, cw, ch;
+    closeBtnPortrait(qx, qy, qw, qh);
+    p2fb(qx, qy, qw, qh, cx, cy, cw, ch);
+    int ccx = cx + cw / 2;
+    int ccy = cy + ch / 2;
+    int cr = (cw < ch ? cw : ch) / 2;
+    fillCircle(fb, ccx, ccy, cr, closeBg);
+    drawKeyGlyph(ccx, ccy, "X", ink, closeBg, 1);
+  }
+}
+
 void CrowPanelDisplay::drawKeyboardOverlay() {
   uint16_t *fb = CrowPanelHw::framebuffer();
   if (!fb) {
@@ -509,6 +641,165 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
       const uint16_t led = 0xF800; // bright red
       fillCircle(fb, x + w / 2, y + 8, 5, led);
     }
+  }
+
+  // Arcade soft pad: beige panel on grey margin, round lit buttons.
+  {
+    using namespace CrowPanelSoftPad;
+    const uint16_t marginGrey = 0x3186; // same as KB bg
+    const uint16_t beige = 0xE6D5;      // controller face
+    const uint16_t beigeEdge = 0xC490;  // warm outline
+    const uint16_t blue = 0x049F;
+    const uint16_t blueLit = 0x7DFF;
+    const uint16_t red = 0xE8C4;
+    const uint16_t redLit = 0xFBAE;
+    const uint16_t bezel = 0x1082;
+    const uint16_t spec = 0xFFFF;
+    const uint16_t progFace = programMode() ? faceOn : 0xC618;
+    const int shi = highlight();
+    const int margin = 6; // grey ring around beige panel
+
+    auto fillRoundRectFb = [&](int bx, int by, int bw, int bh, int rr,
+                               uint16_t fill, uint16_t edge) {
+      if (rr * 2 > bw) {
+        rr = bw / 2;
+      }
+      if (rr * 2 > bh) {
+        rr = bh / 2;
+      }
+      if (rr < 4) {
+        rr = 4;
+      }
+      fillRect(fb, bx + rr, by, bw - 2 * rr, bh, fill);
+      fillRect(fb, bx, by + rr, bw, bh - 2 * rr, fill);
+      fillCircle(fb, bx + rr, by + rr, rr, fill);
+      fillCircle(fb, bx + bw - 1 - rr, by + rr, rr, fill);
+      fillCircle(fb, bx + rr, by + bh - 1 - rr, rr, fill);
+      fillCircle(fb, bx + bw - 1 - rr, by + bh - 1 - rr, rr, fill);
+      // Thin edge
+      fillRect(fb, bx + rr, by, bw - 2 * rr, 2, edge);
+      fillRect(fb, bx + rr, by + bh - 2, bw - 2 * rr, 2, edge);
+      fillRect(fb, bx, by + rr, 2, bh - 2 * rr, edge);
+      fillRect(fb, bx + bw - 2, by + rr, 2, bh - 2 * rr, edge);
+    };
+
+    int bx, by, bw, bh;
+    bodyPortrait(bx, by, bw, bh);
+    if (bw > 0 && bh > 0) {
+      int x0, y0, x1, y1;
+      portraitToFb(bx, by, x0, y0);
+      portraitToFb(bx + bw - 1, by + bh - 1, x1, y1);
+      int fx = x0 < x1 ? x0 : x1;
+      int fy = y0 < y1 ? y0 : y1;
+      int fw = (x0 > x1 ? x0 : x1) - fx + 1;
+      int fh = (y0 > y1 ? y0 : y1) - fy + 1;
+      // Grey margin (already KB bg, stamp explicitly).
+      fillRect(fb, fx, fy, fw, fh, marginGrey);
+      // Beige rounded panel inset a few pixels — modest corner radius (not
+      // Nintendo capsule ends).
+      const int inset = margin;
+      int rr = 14;
+      fillRoundRectFb(fx + inset, fy + inset, fw - 2 * inset, fh - 2 * inset, rr,
+                      beige, beigeEdge);
+    }
+
+    auto drawArcadeBtn = [&](int slotIdx, bool redBtn) {
+      int pcx, pcy, pr;
+      buttonPortrait(slotIdx, pcx, pcy, pr);
+      if (pr <= 0) {
+        return;
+      }
+      int cx, cy;
+      portraitToFb(pcx, pcy, cx, cy);
+      const bool pressed = (shi == slotIdx);
+      const bool selected = programMode() && selectedSlot() == slotIdx;
+      const uint16_t face = redBtn ? red : blue;
+      const uint16_t glow = redBtn ? redLit : blueLit;
+      const uint16_t chrome = 0xC618; // metal ring
+      const uint16_t chromeDk = 0x7BEF;
+
+      // Always-on ring (same size as lit ring), grey when idle.
+      const uint16_t ringOuter = 0x7BEF; // mid grey
+      const uint16_t ringInner = 0x8410; // darker grey
+      fillCircle(fb, cx, cy, pr + 8, ringOuter);
+      fillCircle(fb, cx, cy, pr + 4, ringInner);
+      // Lit: same ring, glow + white fill — 0.25s timed.
+      if (pressed || selected) {
+        fillCircle(fb, cx, cy, pr + 8, glow);
+        fillCircle(fb, cx, cy, pr + 4, 0xFFFF);
+      }
+      // Real arcade stack: outer metal ring → black well → colored dome.
+      fillCircle(fb, cx, cy, pr, chrome);
+      fillCircle(fb, cx, cy, pr - 2, chromeDk);
+      fillCircle(fb, cx, cy, pr - 4, bezel);
+      fillCircle(fb, cx, cy, pr - 7, selected ? faceOn : face);
+      // Specular highlight
+      fillCircle(fb, cx - pr / 3, cy - pr / 3, pr / 5, spec);
+      const uint16_t inner = selected ? faceOn : face;
+      fillCircle(fb, cx, cy, pr / 2, inner);
+      const char *lab = slot(slotIdx).label;
+      // Bigger face letter (2×). Red buttons use white text for contrast.
+      const int labScale = 2;
+      const uint16_t labInk = redBtn ? (uint16_t)0xFFFF : ink;
+      drawKeyGlyph(cx, cy, (lab && lab[0]) ? lab : "--", labInk, inner,
+                   labScale);
+    };
+
+    for (int i = 0; i < kSlotCount; i++) {
+      drawArcadeBtn(i, isArrowSlot(i));
+    }
+
+    // Commodore 64 logo bitmap above the D-pad (90° CCW).
+    {
+      int lcx, lcy, lw, lh;
+      logoPortrait(lcx, lcy, lw, lh);
+      if (lw > 0 && lh > 0 && C64_LOGO_W > 0 && C64_LOGO_H > 0) {
+        const int ppx = lcx - lw / 2;
+        const int ppy = lcy - lh / 2;
+        int x0, y0, x1, y1;
+        portraitToFb(ppx, ppy, x0, y0);
+        portraitToFb(ppx + lw - 1, ppy + lh - 1, x1, y1);
+        const int dx = x0 < x1 ? x0 : x1;
+        const int dy = y0 < y1 ? y0 : y1;
+        // 90° CCW: src(sx,sy) → dest(sy, W-1-sx); out size H×W.
+        for (int sy = 0; sy < C64_LOGO_H; sy++) {
+          for (int sx = 0; sx < C64_LOGO_W; sx++) {
+            const int nx = sy;
+            const int ny = C64_LOGO_W - 1 - sx;
+            const int fx = dx + nx;
+            const int fy = dy + ny;
+            if (fx < 0 || fy < 0 || fx >= (int)CrowPanelHw::PANEL_W ||
+                fy >= (int)CrowPanelHw::PANEL_H) {
+              continue;
+            }
+            fb[fy * CrowPanelHw::PANEL_W + fx] =
+                C64_LOGO_RGB565[sy * C64_LOGO_W + sx];
+          }
+        }
+      }
+    }
+
+    // Small PROG in upper-right.
+    {
+      int pcx, pcy, pr;
+      progPortrait(pcx, pcy, pr);
+      if (pr > 0) {
+        int cx, cy;
+        portraitToFb(pcx, pcy, cx, cy);
+        const bool pressed = (shi == kProgHit);
+        if (pressed) {
+          fillCircle(fb, cx, cy, pr + 3, 0xFFE0);
+        }
+        fillCircle(fb, cx, cy, pr, bezel);
+        fillCircle(fb, cx, cy, pr - 2, progFace);
+        fillCircle(fb, cx - pr / 4, cy - pr / 4, pr / 5, spec);
+        drawKeyGlyph(cx, cy, programMode() ? "SET" : "P", ink, progFace);
+      }
+    }
+  }
+
+  if (CrowPanelSetup::active()) {
+    drawSetupOverlay();
   }
 
   CrowPanelHw::clearKeyboardRedraw();
