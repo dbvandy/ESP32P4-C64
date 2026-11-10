@@ -1,0 +1,374 @@
+package org.retroelec.thmic64kb;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ProgressBar;
+import android.widget.Switch;
+import android.widget.Toast;
+
+import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.slider.Slider;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+public class DivActivity extends AppCompatActivity implements SettingsObserver, NotificationObserver {
+    private Switch toggleSendRawKeyCodes;
+    private Switch togglePerf;
+    private Switch toggleDetectReleaseKey;
+    private Slider volumeSlider;
+    private Button keyattach;
+    private EditText inputMinKeyPressedDuration;
+    private BLEUtils bleUtils;
+    private Settings settings;
+    private MyApplication myApplication;
+    private Type4Notification type4Notification;
+    private volatile boolean ackFromServer = false;
+
+    private static final int PICK_FILE_REQUEST_CODE = 1;
+    private ActivityResultLauncher<Intent> filePickerLauncher;
+    private byte[] buffer = new byte[64 * 1024];
+    private int bufferlen;
+
+    private void openFilePicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.setType("application/octet-stream");
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        filePickerLauncher.launch(intent);
+    }
+
+    private void sendNextBlock(int blocknr, boolean firstBlock, boolean lastBlock, int lengthLastBlock) {
+        int start = blocknr * 250;
+        byte[] block = new byte[254];
+        byte blockdetail = 0;
+        int headerlen = 3;
+        int datalen = 250;
+        if (firstBlock) {
+            blockdetail = 1;
+        } else if (lastBlock) {
+            blockdetail = 2;
+            headerlen = 4; // add one byte for length info in last block
+            datalen = lengthLastBlock;
+        }
+        if (lastBlock) {
+            System.arraycopy(new byte[]{Config.RECEIVEDATA, blockdetail, (byte) 0x80, (byte) datalen}, 0, block, 0, headerlen);
+        } else {
+            System.arraycopy(new byte[]{Config.RECEIVEDATA, blockdetail, (byte) 0x80}, 0, block, 0, headerlen);
+        }
+        System.arraycopy(buffer, start, block, headerlen, datalen);
+        Log.i("THMIC64", "sendNextBlock, detail = " + blockdetail);
+        bleUtils.send(block, true);
+    }
+
+    private void wait4Ack() {
+        long startTime = System.currentTimeMillis();
+        long timeout = 3000; // 3000ms
+        while (!ackFromServer) {
+            if (System.currentTimeMillis() - startTime > timeout) {
+                Log.i("THMIC64", "wait4Ack timeout!!");
+                break;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        ackFromServer = false;
+        long duration = System.currentTimeMillis() - startTime;
+        Log.i("THMIC64", "wait4Ack received data after " + duration);
+    }
+
+    private void readFileFromUri(Context context, Uri uri) throws IOException {
+        InputStream inputStream = context.getContentResolver().openInputStream(uri);
+        ByteArrayOutputStream byteBuffer = new ByteArrayOutputStream();
+        int len;
+        while ((len = inputStream.read(buffer)) != -1) {
+            byteBuffer.write(buffer, 0, len);
+        }
+        bufferlen = byteBuffer.size();
+        inputStream.close();
+    }
+
+    private AlertDialog progressDialog;
+    private ProgressBar progressBar;
+    private boolean isCancelled;
+
+    private void showProgressDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("transfer in progress...")
+                .setMessage("data will be sent...")
+                .setCancelable(false) // dialog may not be closed using the back button
+                .setNegativeButton("Cancel", (dialog, which) -> {
+                    isCancelled = true;
+                    dismissProgressDialog();
+                });
+        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setMax(100);
+        builder.setView(progressBar);
+        progressDialog = builder.create();
+        progressDialog.show();
+    }
+
+    private void updateProgress(int actblock, int numOfBlocks) {
+        int percent = 100 * actblock / numOfBlocks;
+        if (progressBar != null) {
+            progressBar.setProgress(percent);
+        }
+        if (progressDialog != null && progressDialog.isShowing()) {
+            progressDialog.setMessage(percent + "%");
+        }
+    }
+
+    private void dismissProgressDialog() {
+        if (progressDialog != null && progressDialog.isShowing()) {
+            progressDialog.dismiss();
+        }
+    }
+
+    private void startTransfer(ActivityResult result) {
+        isCancelled = false;
+        ackFromServer = false;
+        Uri uri = result.getData().getData();
+        try {
+            readFileFromUri(DivActivity.this, uri);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        if (bufferlen > 0) {
+            int numOfBlocks = bufferlen / 250;
+            int lengthLastBlock = bufferlen % 250;
+            if (lengthLastBlock != 0) {
+                numOfBlocks++;
+            }
+            Log.i("THMIC64", "size of file = " + bufferlen + ", num of blocks = " + numOfBlocks);
+            showProgressDialog();
+            myApplication.setBleTransferActive(true);
+            int finalNumOfBlocks = numOfBlocks;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    boolean first = true;
+                    boolean last = false;
+                    for (int i = 0; i < finalNumOfBlocks; i++) {
+                        if (isCancelled) {
+                            runOnUiThread(() -> Toast.makeText(DivActivity.this, "Transfer canceled", Toast.LENGTH_SHORT).show());
+                            return;
+                        }
+                        int finalI = i;
+                        int remainingBlocks = finalNumOfBlocks - i;
+                        runOnUiThread(() -> updateProgress(finalI, finalNumOfBlocks));
+                        if (i == (finalNumOfBlocks - 1)) {
+                            last = true;
+                        }
+                        sendNextBlock(i, first, last, lengthLastBlock);
+                        wait4Ack();
+                        first = false;
+                    }
+                    // Transfer beendet
+                    runOnUiThread(() -> {
+                        dismissProgressDialog();
+                        Toast.makeText(DivActivity.this, "transfer finished", Toast.LENGTH_SHORT).show();
+                        myApplication.setBleTransferActive(false);
+                    });
+                }
+            }).start();
+        }
+    }
+
+    @Override
+    public void update() {
+        ackFromServer = true;
+    }
+
+    @Override
+    public void updateSettings() {
+        runOnUiThread(() -> {
+            toggleSendRawKeyCodes.setChecked(settings.isSendRawKeyCodes());
+            togglePerf.setChecked(settings.isPerf());
+            toggleDetectReleaseKey.setChecked(settings.isDetectReleaseKey());
+            volumeSlider.setValue(settings.getVolume() * 100 / 255);
+            if (settings.isd64attached()) {
+                keyattach.setBackgroundColor(Config.KEYBGDCOLORD64ATTACHED);
+            } else {
+                keyattach.setBackgroundColor(Config.KEYBGDCOLORACTION);
+            }
+        });
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        settings.registerSettingsObserver(this);
+        updateSettings();
+        BLEManager bleManager = myApplication.getBleManager();
+        if ((bleManager != null) && (bleManager.getCharacteristic() != null) && (!myApplication.isBleTransferActive())) {
+            bleUtils.send(new byte[]{Config.GETSTATUS, (byte) 0x00, (byte) 0x80}, false);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        settings.removeSettingsObserver(this);
+    }
+
+    private byte[] getAttachInputBytes() {
+        EditText attachInput = findViewById(R.id.attachInput);
+        if (attachInput == null) {
+            return null;
+        }
+        String text = attachInput.getText().toString();
+        if (text.isEmpty()) {
+            return null;
+        }
+        byte[] bytes = text.getBytes(StandardCharsets.US_ASCII);
+        byte[] result = new byte[bytes.length + 1];
+        System.arraycopy(bytes, 0, result, 0, bytes.length);
+        result[bytes.length] = 0;
+        return result;
+    }
+
+    private final C64Keyboard.ActionDownHandler createAttachCommand = (context, key) -> {
+        byte[] result = new byte[0];
+        byte[] attachBytes = getAttachInputBytes();
+        if (attachBytes == null) {
+            Log.i("THMIC64", "detach file");
+            result = new byte[]{Config.DETACHD64, (byte) 0, (byte) 0x80};
+        } else {
+            Log.i("THMIC64", "attach file " + new String(attachBytes, StandardCharsets.UTF_8));
+            byte[] base = new byte[]{Config.ATTACHD64, (byte) attachBytes.length, (byte) 0x80};
+            result = new byte[base.length + attachBytes.length];
+            System.arraycopy(base, 0, result, 0, base.length);
+            System.arraycopy(attachBytes, 0, result, base.length, attachBytes.length);
+        }
+        bleUtils.send(result);
+        return true;
+    };
+
+    private void onVolumeChanged(int progress) {
+        byte volume = (byte) (progress * 255 / 100);
+        Log.i("THMIC64", "send volume " + volume);
+        bleUtils.send(new byte[]{Config.SETVOLUME, volume, (byte) 0x80});
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        bleUtils = new BLEUtils(this);
+
+        myApplication = (MyApplication) getApplication();
+        settings = myApplication.getSettings();
+
+        type4Notification = myApplication.getType4Notification();
+        type4Notification.registerObserver(this);
+
+        setContentView(R.layout.div);
+
+        toggleSendRawKeyCodes = findViewById(R.id.toggleSendRawKeyCodes);
+        toggleSendRawKeyCodes.setOnClickListener(v -> bleUtils.send(new byte[]{Config.SENDRAWKEYS, (byte) 0x00, (byte) 0x80}, false));
+
+        togglePerf = findViewById(R.id.togglePerf);
+        togglePerf.setOnClickListener(v -> bleUtils.send(new byte[]{Config.SWITCHPERF, (byte) 0x00, (byte) 0x80}, false));
+
+        toggleDetectReleaseKey = findViewById(R.id.toggleDetectReleaseKey);
+        toggleDetectReleaseKey.setOnClickListener(v -> bleUtils.send(new byte[]{Config.SWITCHDETECTRELEASEKEY, (byte) 0x00, (byte) 0x80}, false));
+
+        inputMinKeyPressedDuration = findViewById(R.id.inputMinKeyPressedDuration);
+        inputMinKeyPressedDuration.setText(String.valueOf(settings.getMinKeyPressedDuration()));
+        inputMinKeyPressedDuration.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_NEXT || event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+                String input = inputMinKeyPressedDuration.getText().toString();
+                try {
+                    int value = Integer.parseInt(input);
+                    if (value < 100) {
+                        inputMinKeyPressedDuration.setText("100");
+                    } else if (value > 200) {
+                        inputMinKeyPressedDuration.setText("200");
+                    }
+                } catch (NumberFormatException e) {
+                    inputMinKeyPressedDuration.setText(String.valueOf(Config.DEFAULT_MINKEYPRESSEDDURATION));
+                }
+                settings.setMinKeyPressedDuration(Short.parseShort(String.valueOf(inputMinKeyPressedDuration.getText())));
+                inputMinKeyPressedDuration.clearFocus();
+                InputMethodManager imm = (InputMethodManager) inputMinKeyPressedDuration.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                imm.hideSoftInputFromWindow(inputMinKeyPressedDuration.getWindowToken(), 0);
+                return true;
+            }
+            return false;
+        });
+
+        filePickerLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+                        BLEManager bleManager = myApplication.getBleManager();
+                        if ((bleManager != null) && (bleManager.getCharacteristic() != null)) {
+                            startTransfer(result);
+                        } else {
+                            Toast.makeText(DivActivity.this, "no BLE connection, please connect to emulator", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                });
+
+        final Button send = findViewById(R.id.send);
+        send.setOnClickListener(view -> openFilePicker());
+
+        final Button keyspecial1 = findViewById(R.id.keyspecial1);
+        keyspecial1.setOnTouchListener(bleUtils.createButtonTouchListener(keyspecial1, new byte[]{Config.SPECIAL1, (byte) 0x00, (byte) 0x80}, Config.KEYSELECTEDCOLORACTION, Config.KEYBGDCOLORACTION, true));
+
+        final Button keyspecial2 = findViewById(R.id.keyspecial2);
+        keyspecial2.setOnTouchListener(bleUtils.createButtonTouchListener(keyspecial2, new byte[]{Config.SPECIAL2, (byte) 0x00, (byte) 0x80}, Config.KEYSELECTEDCOLORACTION, Config.KEYBGDCOLORACTION, true));
+
+        final Button keysave = findViewById(R.id.keysave);
+        keysave.setOnTouchListener(bleUtils.createButtonTouchListener(keysave, new byte[]{Config.SAVE, (byte) 0x00, (byte) 0x80}, Config.KEYSELECTEDCOLORACTION, Config.KEYBGDCOLORACTION, true));
+
+        final Button keylist = findViewById(R.id.keylist);
+        keylist.setOnTouchListener(bleUtils.createButtonTouchListener(keylist, new byte[]{Config.LIST, (byte) 0x00, (byte) 0x80}, Config.KEYSELECTEDCOLORACTION, Config.KEYBGDCOLORACTION, true));
+
+        keyattach = findViewById(R.id.keyattach);
+        keyattach.setOnTouchListener(bleUtils.createButtonTouchListener(
+                "A", createAttachCommand, true, Config.KEYSELECTEDCOLORACTION, Config.KEYBGDCOLORACTION)
+        );
+
+        volumeSlider = findViewById(R.id.volumeSlider);
+        volumeSlider.addOnSliderTouchListener(new Slider.OnSliderTouchListener() {
+            @Override
+            public void onStartTrackingTouch(Slider slider) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(Slider slider) {
+                int volume = Math.round(slider.getValue());
+                onVolumeChanged(volume);
+            }
+        });
+
+        final Button closeButton = findViewById(R.id.close);
+        closeButton.setOnClickListener(v -> finish());
+
+        updateSettings();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        type4Notification.removeObserver();
+    }
+}

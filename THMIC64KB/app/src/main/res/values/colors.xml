@@ -1,0 +1,8 @@
+<resources>
+    <color name="colorPrimary">#3F51B5</color>
+    <color name="colorPrimaryDark">#303F9F</color>
+    <color name="colorPrimaryVariant">#3F51B5</color> <!-- Variante, wenn benötigt -->
+    <color name="colorAccent">#FF4081</color>
+    <color name="colorBackground">#b8a894</color> <!-- Beispiel für Hintergrundfarbe -->
+    <color name="white">#FFFFFF</color>
+</resources>

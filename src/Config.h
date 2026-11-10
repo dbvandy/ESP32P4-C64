@@ -1,0 +1,566 @@
+/*
+ Copyright (C) 2024-2026 retroelec <retroelec42@gmail.com>
+
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the
+ Free Software Foundation; either version 3 of the License, or (at your
+ option) any later version.
+
+ This program is distributed in the hope that it will be useful, but
+ WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+ for more details.
+
+ For the complete text of the GNU General Public License see
+ http://www.gnu.org/licenses/.
+*/
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include <cstdint>
+#ifdef ESP_PLATFORM
+#include <driver/gpio.h>
+#include <esp_adc/adc_oneshot.h>
+#endif
+
+#if defined(PLATFORM_LINUX) || defined(_WIN32)
+#if defined(LINUX_NCTERM)
+#define BOARD_LINUX
+#define USE_NOTCURSES_DISPLAY
+#define USE_NOTCURSES_KEYBOARD
+#define USE_LINUXFS
+#define USE_NOJOYSTICK
+#define USE_SDLSOUND
+#define LOG_IN_FILE
+#elif defined(LINUX_TEXTTERM)
+#define BOARD_LINUX
+#define USE_TERMINALTEXT_DISPLAY
+#define USE_TERMINALTEXT_KEYBOARD
+#define USE_LINUXFS
+#define USE_NOJOYSTICK
+#define USE_NOSOUND
+#define LOG_IN_FILE
+#elif defined(LINUX_RPILED)
+#define BOARD_LINUX
+#define USE_RPILED_DISPLAY
+#define USE_TERMINALTEXT_KEYBOARD
+#define USE_LINUXFS
+#define USE_SDLSOUND
+#define USE_SDLJOYSTICK
+#else
+#define BOARD_LINUX
+#define USE_SDL_DISPLAY
+#define USE_SDL_KEYBOARD
+#define USE_LINUXFS
+#define USE_SDLJOYSTICK
+#define USE_SDLSOUND
+#define WINDOWS_BUSYWAIT
+#define USE_SNAPSHOT
+#endif
+
+#elif defined(ESP_PLATFORM)
+
+// keyboard type (ble, web) is determined in the Makefile
+#if defined(USE_BLEWEB_KEYBOARD)
+#define USE_BLE_KEYBOARD
+#define USE_WEB_KEYBOARD
+#endif
+
+#if defined(BOARD_T_HMI)
+#define USE_ST7789V
+#define USE_SDCARD
+#define USE_ARDUINOJOYSTICK
+#define USE_NOSOUND
+// #define USE_PSRAM
+#define USE_WIFI
+#elif defined(BOARD_T_DISPLAY_S3)
+#define USE_RM67162
+#define USE_NOFS
+#define USE_NOJOYSTICK
+#define USE_NOSOUND
+#define USE_WIFI
+#elif defined(BOARD_CYD)
+#define USE_ILI9341
+#define USE_SDCARDCYD
+#define USE_ARDUINOJOYSTICKCYD
+#define USE_CYDSOUND
+#elif defined(BOARD_CROWPANEL_P4)
+#define USE_CROWPANEL_DISPLAY
+#define USE_CROWPANEL_TOUCH_KEYBOARD
+#define USE_SDCARD
+#define USE_NOJOYSTICK
+#define USE_I2SSOUND
+// WiFi/web keyboard deferred: P4 WiFi needs ESP32-C6 SDIO bring-up
+// (same as Flight Radar). Stock WiFiManager hangs before display init.
+#elif defined(BOARD_WAVESHARE)
+#define USE_ST7789VSERIAL
+#define USE_SDCARD
+#define USE_ARDUINOJOYSTICK
+#define USE_I2SSOUND
+#define USE_WIFI
+#elif defined(BOARD_LEDMATRIX1)
+#define USE_LEDMATRIXDISPLAY
+#define USE_NOFS
+#define USE_NOJOYSTICK
+#define USE_NOSOUND
+#define USE_PSRAM
+#define USE_WIFI
+#elif defined(BOARD_LEDMATRIX2)
+#define USE_LEDMATRIXDISPLAY
+#define USE_NOFS
+#define USE_NOJOYSTICK
+#define USE_I2SSOUND
+#define USE_PSRAM
+#define USE_WIFI
+#elif defined(BOARD_ESP32_C3)
+#define USE_NODISPLAY
+#define USE_NOFS
+#define USE_C64JOYSTICK
+#define USE_NOSOUND
+#endif
+
+// WiFi is needed when Web-Keyboard is enabled
+#if defined(USE_WEB_KEYBOARD) && !defined(USE_WIFI)
+#define USE_WIFI
+#endif
+
+#endif
+
+// global defines
+#define AUDIO_SAMPLE_RATE 44100
+
+// Power-off behavior for ESP32S3 boards with a real power latch (Waveshare,
+// T_HMI). T_DISPLAY_S3 always uses the new behavior (no hard power-off
+// available).
+// define EXT1_WAKEUP
+//   - default / undefined: board is hard powered off (power latch released)
+//   - defined: deep sleep with ext1 wakeup; board stays powered and can be
+//     woken by the configured WAKEUP_PIN.
+// #define EXT1_WAKEUP
+
+#if defined(PLATFORM_LINUX) || defined(_WIN32)
+
+#if defined(LINUX_RPILED)
+
+struct Config {
+  // --- constants to be defined for each board ---
+
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 20;
+
+  // audio
+  static const uint8_t DEFAULT_VOLUME = 128;
+
+  // has no function for Raspberry Pi
+  static inline uint16_t LCDSCALE = 1;
+
+  // RPi LED Matrix panel
+  static const uint16_t RPI_PANEL_WIDTH = 64;
+  static const uint16_t RPI_PANEL_HEIGHT = 64;
+  static const uint8_t RPI_CHAIN_LENGTH = 5;
+  static const uint8_t RPI_PARALLEL = 3;
+  static const uint8_t RPI_BRIGHTNESS = 50;
+
+  // filesystem
+  static constexpr const char *PATH = "c64prgs/";
+  static constexpr const char *CONFIGFILE = ".config.json";
+};
+
+#else
+
+struct Config {
+  // --- constants to be defined for each board ---
+
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 20;
+
+  // audio
+  static const uint8_t DEFAULT_VOLUME = 10;
+
+  // display driver
+  static const uint16_t LCDWIDTH = 404;
+  static const uint16_t LCDHEIGHT = 284;
+  static inline uint16_t LCDSCALE = 3;
+
+  // filesystem
+  static constexpr const char *PATH = "c64prgs/";
+  static constexpr const char *CONFIGFILE = ".config.json";
+};
+
+#endif
+
+#elif defined(ESP_PLATFORM)
+
+#if defined(BOARD_T_HMI)
+
+struct Config {
+  // --- constants to be defined for each board ---
+
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 0;
+
+  // no sound
+  static const uint8_t DEFAULT_VOLUME = 0;
+
+  // --- driver specific constants ---
+
+  // power
+  static const uint8_t PWR_EN = 10;
+  static const uint8_t PWR_ON = 14;
+  static const adc_channel_t BAT_ADC = ADC_CHANNEL_4; // GPIO5
+
+  // ext1 wakeup (External Wakeup) - MUST be an RTC GPIO (ESP32-S3: 0-21)
+  // adjust this to the pin connected to the wake/power button
+  static const gpio_num_t WAKEUP_PIN = GPIO_NUM_17;
+
+  // ST7789V
+  static const uint8_t BL = 38;
+  static const uint8_t CS = 6;
+  static const uint8_t DC = 7;
+  static const uint8_t WR = 8;
+  static const uint8_t D0 = 48;
+  static const uint8_t D1 = 47;
+  static const uint8_t D2 = 39;
+  static const uint8_t D3 = 40;
+  static const uint8_t D4 = 41;
+  static const uint8_t D5 = 42;
+  static const uint8_t D6 = 45;
+  static const uint8_t D7 = 46;
+
+  // display driver
+  static const uint16_t LCDWIDTH = 320;
+  static const uint16_t LCDHEIGHT = 240;
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // SDCard
+  static const uint8_t SD_MISO_PIN = 13;
+  static const uint8_t SD_MOSI_PIN = 11;
+  static const uint8_t SD_SCLK_PIN = 12;
+
+  // Joystick
+  static const adc_channel_t ADC_JOYSTICK_X = ADC_CHANNEL_4;
+  static const adc_channel_t ADC_JOYSTICK_Y = ADC_CHANNEL_5;
+  static const uint8_t JOYSTICK_FIRE_PIN = 18;
+  static const uint8_t JOYSTICK_FIRE2_PIN = 17;
+
+  // BLEKB
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#elif defined(BOARD_T_DISPLAY_S3)
+
+struct Config {
+  // --- constants to be defined for each board ---
+
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 13;
+
+  // no sound
+  static const uint8_t DEFAULT_VOLUME = 0;
+
+  // --- driver specific constants ---
+
+  // power
+  // ext1 wakeup (External Wakeup) - MUST be an RTC GPIO (ESP32-S3: 0-21)
+  static const gpio_num_t WAKEUP_PIN = GPIO_NUM_21;
+  static const adc_channel_t BAT_ADC = ADC_CHANNEL_3; // GPIO4
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // display driver
+  static const uint16_t LCDWIDTH = 536;
+  static const uint16_t LCDHEIGHT = 240;
+
+  // BLEKB
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#elif defined(BOARD_CYD)
+
+struct Config {
+  // --- constants to be defined for each board ---
+
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 10;
+
+  // --- driver specific constants ---
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // display driver
+  static const uint16_t LCDWIDTH = 320;
+  static const uint16_t LCDHEIGHT = 240;
+
+  // Sound
+  static const uint8_t DEFAULT_VOLUME = 128;
+  static const uint8_t I2S_DOUT = 26;
+
+  // SDCard
+  static const uint8_t SD_MISO_PIN = 19;
+  static const uint8_t SD_MOSI_PIN = 23;
+  static const uint8_t SD_SCLK_PIN = 18;
+  static const uint8_t SD_CS_PIN = 5;
+
+  // Joystick
+  static const adc_channel_t ADC_JOYSTICK_X = ADC_CHANNEL_7;
+  static const adc_channel_t ADC_JOYSTICK_Y = ADC_CHANNEL_7;
+  static const uint8_t JOYSTICK_FIRE_PIN = 22;
+};
+
+#elif defined(BOARD_CROWPANEL_P4)
+
+struct Config {
+  // delay until next display refresh (MIPI DPI needs breathing room)
+  static const uint8_t REFRESHDELAY = 16;
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // Physical panel (Elecrow CrowPanel Advanced 10.1")
+  static const uint16_t LCDWIDTH = 1024;
+  static const uint16_t LCDHEIGHT = 600;
+
+  // Backlight / power
+  static const uint8_t LCD_BACKLIGHT_PIN = 31;
+  static const uint8_t LCD_BACKLIGHT_ON_LEVEL = 1;
+  static const uint8_t LCD_BK_POWER_PIN = 29;
+
+  // Sound (on-board I2S amp)
+  static const uint8_t DEFAULT_VOLUME = 20;
+  static const uint8_t I2S_DOUT = 23;
+  static const uint8_t I2S_BCLK = 22;
+  static const uint8_t I2S_LRC = 21;
+  static const uint8_t SPK_AMP_PIN = 30;
+
+  // microSD (1-bit SDMMC). Card VDD via GPIO38; IO bank already on LDO4.
+  static const uint8_t SD_SCLK_PIN = 43;  // CLK
+  static const uint8_t SD_MOSI_PIN = 44;  // CMD
+  static const uint8_t SD_MISO_PIN = 39;  // D0
+  static const uint8_t SD_POWER_PIN = 38; // active-high card power
+
+  // BLEKB UUIDs (unused for web keyboard, kept for API compatibility)
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#elif defined(BOARD_WAVESHARE)
+
+struct Config {
+  // --- constants to be defined for each board ---
+
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 11;
+
+  // --- driver specific constants ---
+
+  // power
+  // ext1 wakeup (External Wakeup) - MUST be an RTC GPIO (ESP32-S3: 0-21)
+  static const gpio_num_t WAKEUP_PIN = GPIO_NUM_10;
+  static const gpio_num_t PWR_CONTROL_PIN = GPIO_NUM_7;
+  static const adc_channel_t BAT_ADC = ADC_CHANNEL_7; // GPIO8
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // display driver
+  static const uint16_t LCDWIDTH = 320;
+  static const uint16_t LCDHEIGHT = 240;
+
+  // ST7789VSerial
+  static const int8_t MISO = -1;
+  static const uint8_t MOSI = 45;
+  static const uint8_t SCLK = 40;
+  static const uint8_t LCD_CS = 42;
+  static const uint8_t LCD_DC = 41;
+  static const uint8_t LCD_RST = 39;
+  static const uint8_t LCD_BACKLIGHT_PIN = 5;
+  static const uint16_t LCD_BACKLIGHT_FREQUENCY = 20000;
+  static const uint8_t LCD_BACKLIGHT_RESOLUTION = 10;
+  static const uint16_t LCD_BACKLIGHT_DUTYFACTOR = 500;
+
+  // Sound
+  static const uint8_t DEFAULT_VOLUME = 128;
+  static const uint8_t I2S_DOUT = 47;
+  static const uint8_t I2S_BCLK = 48;
+  static const uint8_t I2S_LRC = 38;
+
+  // SDCard
+  static const gpio_num_t SD_D3_PIN = GPIO_NUM_21;
+  static const uint8_t SD_MISO_PIN = 16;
+  static const uint8_t SD_MOSI_PIN = 17;
+  static const uint8_t SD_SCLK_PIN = 14;
+
+  // Joystick
+  static const adc_channel_t ADC_JOYSTICK_X = ADC_CHANNEL_4;
+  static const adc_channel_t ADC_JOYSTICK_Y = ADC_CHANNEL_7;
+  static const uint8_t JOYSTICK_FIRE_PIN = 11;
+  static const uint8_t JOYSTICK_FIRE2_PIN = 10;
+
+  // BLEKB
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#elif defined(BOARD_LEDMATRIX1)
+
+struct Config {
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 15;
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // no sound
+  static const uint8_t DEFAULT_VOLUME = 0;
+
+  // display driver
+  static const uint16_t C64WIDTH = 320;
+  static const uint16_t C64HEIGHT = 240;
+  static const uint16_t LEDMATRIXWIDTH = 64;
+  static const uint16_t LEDMATRIXHEIGHT = 64;
+  static const uint8_t LEDMATRIXIGNBORDERX = 32;
+  static const uint8_t LEDMATRIXIGNBORDERY = 4;
+  static const uint8_t LEDMATRIXSCALEX =
+      (C64WIDTH - (2 * LEDMATRIXIGNBORDERX)) / LEDMATRIXWIDTH;
+  static const uint8_t LEDMATRIXSCALEY =
+      (C64HEIGHT - (2 * LEDMATRIXIGNBORDERY)) / LEDMATRIXHEIGHT;
+  static const uint8_t LEDMATRIXBRIGHTNESS = 128;
+  static const uint8_t NUMPANELS = 1;
+
+  // LEDMatrixDisplay
+  static const uint8_t R1 = 4;
+  static const uint8_t G1 = 17;
+  static const uint8_t B1 = 5;
+  static const uint8_t R2 = 6;
+  static const uint8_t G2 = 18;
+  static const uint8_t B2 = 7;
+  static const uint8_t CH_A = 15;
+  static const uint8_t CH_B = 3;
+  static const uint8_t CH_C = 16;
+  static const uint8_t CH_D = 46;
+  static const uint8_t CH_E = 8;
+  static const uint8_t LAT = 40;
+  static const uint8_t OE = 39;
+  static const uint8_t CLK = 41;
+
+  // BLEKB
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#elif defined(BOARD_LEDMATRIX2)
+
+struct Config {
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 15;
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // display driver
+  static const uint16_t C64WIDTH = 320;
+  static const uint16_t C64HEIGHT = 240;
+  static const uint16_t LEDMATRIXWIDTH = 128;
+  static const uint16_t LEDMATRIXHEIGHT = 64;
+  static const uint8_t LEDMATRIXIGNBORDERX = 32;
+  static const uint8_t LEDMATRIXIGNBORDERY = 4;
+  static const uint8_t LEDMATRIXSCALEX =
+      (C64WIDTH - (2 * LEDMATRIXIGNBORDERX)) / LEDMATRIXWIDTH;
+  static const uint8_t LEDMATRIXSCALEY =
+      (C64HEIGHT - (2 * LEDMATRIXIGNBORDERY)) / LEDMATRIXHEIGHT;
+  static const uint8_t LEDMATRIXBRIGHTNESS = 128;
+  static const uint8_t NUMPANELS = 1;
+
+  // LEDMatrixDisplay
+  static const uint8_t R1 = 4;
+  static const uint8_t G1 = 17;
+  static const uint8_t B1 = 5;
+  static const uint8_t R2 = 6;
+  static const uint8_t G2 = 18;
+  static const uint8_t B2 = 7;
+  static const uint8_t CH_A = 15;
+  static const uint8_t CH_B = 3;
+  static const uint8_t CH_C = 16;
+  static const uint8_t CH_D = 46;
+  static const uint8_t CH_E = 8;
+  static const uint8_t LAT = 40;
+  static const uint8_t OE = 39;
+  static const uint8_t CLK = 41;
+
+  // Sound
+  static const uint8_t DEFAULT_VOLUME = 10;
+  static const uint8_t I2S_DOUT = 21;
+  static const uint8_t I2S_BCLK = 47;
+  static const uint8_t I2S_LRC = 45;
+
+  // BLEKB
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#elif defined(BOARD_ESP32_C3)
+
+struct Config {
+  // delay until next display refresh
+  static const uint8_t REFRESHDELAY = 15;
+
+  // filesystem
+  static constexpr const char *PATH = "";
+  static constexpr const char *CONFIGFILE = ".config.json";
+
+  // no sound
+  static const uint8_t DEFAULT_VOLUME = 0;
+
+  // Joystick
+  static const uint8_t JOYSTICK_UP_PIN = 0;
+  static const uint8_t JOYSTICK_DOWN_PIN = 1;
+  static const uint8_t JOYSTICK_LEFT_PIN = 2;
+  static const uint8_t JOYSTICK_RIGHT_PIN = 3;
+  static const uint8_t JOYSTICK_FIRE_PIN = 4;
+  static const uint8_t JOYSTICK_FIRE2_PIN = 9;
+
+  // BLEKB
+  static constexpr const char *SERVICE_UUID =
+      "695ba701-a48c-43f6-9028-3c885771f19f";
+  static constexpr const char *CHARACTERISTIC_UUID =
+      "3b05e9bf-086f-4b56-9c37-7b7eeb30b28b";
+};
+
+#else
+
+#error "no valid board defined"
+
+#endif
+
+#else
+
+#error "no valid platform defined"
+
+#endif
+
+#endif // CONFIG_H

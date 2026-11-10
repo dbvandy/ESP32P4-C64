@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    android:background="@color/colorBackground"
+    android:fitsSystemWindows="true">
+
+    <!-- Joystick View -->
+    <View
+        android:id="@+id/viewjoystick"
+        android:layout_width="90dp"
+        android:layout_height="90dp"
+        android:background="#b8a894"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintHorizontal_bias="0.33"
+        app:layout_constraintVertical_bias="0.5"/>
+
+    <!-- Circle in Joystick -->
+    <ImageButton
+        android:id="@+id/circle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:src="@drawable/circle"
+        app:layout_constraintTop_toTopOf="@id/viewjoystick"
+        app:layout_constraintBottom_toBottomOf="@id/viewjoystick"
+        app:layout_constraintStart_toStartOf="@id/viewjoystick"
+        app:layout_constraintEnd_toEndOf="@id/viewjoystick" />
+
+    <!-- Down Arrow -->
+    <ImageButton
+        android:id="@+id/arrowdown"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:src="@drawable/arrowdown"
+        android:contentDescription="down"
+        app:layout_constraintTop_toBottomOf="@id/viewjoystick"
+        app:layout_constraintStart_toStartOf="@id/viewjoystick"
+        app:layout_constraintEnd_toEndOf="@id/viewjoystick" />
+
+    <!-- Up Arrow -->
+    <ImageButton
+        android:id="@+id/arrowup"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:src="@drawable/arrowup"
+        android:contentDescription="up"
+        app:layout_constraintBottom_toTopOf="@id/viewjoystick"
+        app:layout_constraintStart_toStartOf="@id/viewjoystick"
+        app:layout_constraintEnd_toEndOf="@id/viewjoystick" />
+
+    <!-- Right Arrow -->
+    <ImageButton
+        android:id="@+id/arrowright"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:src="@drawable/arrowright"
+        android:contentDescription="right"
+        app:layout_constraintTop_toTopOf="@id/viewjoystick"
+        app:layout_constraintBottom_toBottomOf="@id/viewjoystick"
+        app:layout_constraintStart_toEndOf="@id/viewjoystick" />
+
+    <!-- Left Arrow -->
+    <ImageButton
+        android:id="@+id/arrowleft"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:src="@drawable/arrowleft"
+        android:contentDescription="left"
+        app:layout_constraintTop_toTopOf="@id/viewjoystick"
+        app:layout_constraintBottom_toBottomOf="@id/viewjoystick"
+        app:layout_constraintEnd_toStartOf="@id/viewjoystick" />
+
+    <!-- Fire Button 1 -->
+    <ImageButton
+        android:id="@+id/fire1"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:contentDescription="fire1"
+        android:src="@drawable/button"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.7"
+        android:layout_marginTop="16dp"/>
+
+    <!-- Fire Button 2 -->
+    <ImageButton
+        android:id="@+id/fire2"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@android:color/transparent"
+        android:contentDescription="fire2"
+        android:src="@drawable/button"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.9"
+        android:layout_marginTop="16dp"/>
+
+    <!-- Close Button -->
+    <Button
+        android:id="@+id/close"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Close"
+        android:theme="@style/ButtonTheme"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginBottom="32dp"/>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

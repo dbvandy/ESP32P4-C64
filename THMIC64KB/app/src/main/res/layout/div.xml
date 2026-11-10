@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/colorBackground"
+    android:padding="16dp"
+    android:fitsSystemWindows="true">
+
+    <GridLayout
+        android:id="@+id/switchGrid"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:alignmentMode="alignMargins"
+        android:columnCount="4"
+        android:useDefaultMargins="true"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <Switch
+            android:id="@+id/togglePerf"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Monitor Perf." />
+
+        <Switch
+            android:id="@+id/toggleSendRawKeyCodes"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Send raw keycodes" />
+
+        <Switch
+            android:id="@+id/toggleDetectReleaseKey"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Detect key release" />
+
+        <TextView
+            android:id="@+id/labelMinKeyDuration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Min. key pressed dur." />
+
+        <EditText
+            android:id="@+id/inputMinKeyPressedDuration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/textborder"
+            android:ems="4"
+            android:hint="Min: 100, Max: 200"
+            android:imeOptions="actionDone"
+            android:inputType="number"
+            android:maxLength="3" />
+    </GridLayout>
+
+    <LinearLayout
+        android:id="@+id/blueButtons"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/switchGrid">
+
+        <Button
+            android:id="@+id/send"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="10dp"
+            android:layout_weight="1"
+            android:backgroundTint="#cc7777"
+            android:text="SENDPRG"
+            android:theme="@style/ButtonTheme" />
+
+        <Button
+            android:id="@+id/keyspecial1"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="10dp"
+            android:layout_weight="1"
+            android:backgroundTint="#cc7777"
+            android:text="SPECIAL1"
+            android:theme="@style/ButtonTheme" />
+
+        <Button
+            android:id="@+id/keyspecial2"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:backgroundTint="#cc7777"
+            android:text="SPECIAL2"
+            android:theme="@style/ButtonTheme" />
+
+        <TextView
+            android:id="@+id/labelVolume"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="4dp"
+            android:labelFor="@id/volumeSlider"
+            android:text="Vol" />
+
+        <com.google.android.material.slider.Slider
+            android:id="@+id/volumeSlider"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:labelFor="@id/volumeSlider"
+            android:stepSize="1"
+            android:value="50"
+            android:valueFrom="0"
+            android:valueTo="100"
+            app:haloColor="@color/colorAccent"
+            app:thumbColor="@color/colorAccent"
+            app:trackColorActive="@color/colorAccent"
+            app:trackColorInactive="@color/colorBackground" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/redButtons"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center"
+        android:orientation="horizontal"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/blueButtons">
+
+        <Button
+            android:id="@+id/keysave"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="10dp"
+            android:layout_weight="1"
+            android:backgroundTint="#cc7777"
+            android:text="SAVE" />
+
+        <Button
+            android:id="@+id/keylist"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="10dp"
+            android:layout_weight="1"
+            android:backgroundTint="#cc7777"
+            android:text="LIST" />
+
+        <Button
+            android:id="@+id/keyattach"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginEnd="10dp"
+            android:layout_weight="1"
+            android:backgroundTint="#cc7777"
+            android:text="ATTACH" />
+
+        <EditText
+            android:id="@+id/attachInput"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1.2"
+            android:background="@drawable/textborder"
+            android:hint="Attach path" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/close"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="32dp"
+        android:text="Close"
+        android:theme="@style/ButtonTheme"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+</androidx.constraintlayout.widget.ConstraintLayout>

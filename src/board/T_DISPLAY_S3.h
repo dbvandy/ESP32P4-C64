@@ -1,0 +1,42 @@
+/*
+ Copyright (C) 2024-2026 retroelec <retroelec42@gmail.com>
+
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the
+ Free Software Foundation; either version 3 of the License, or (at your
+ option) any later version.
+
+ This program is distributed in the hope that it will be useful, but
+ WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+ for more details.
+
+ For the complete text of the GNU General Public License see
+ http://www.gnu.org/licenses/.
+*/
+#ifndef T_DISPLAY_S3_H
+#define T_DISPLAY_S3_H
+
+#include "../Config.h"
+#ifdef BOARD_T_DISPLAY_S3
+#include "../display/rm67162/rm67162.h"
+#include "BoardDriver.h"
+#include "Wakeup.h"
+#include "esp_sleep.h"
+
+class T_DISPLAY_S3 : public BoardDriver {
+public:
+  void init() override {}
+
+  uint16_t getBatteryVoltage() override { return 4000; }
+
+  void powerOff() override {
+    // configure ext1 wakeup on the configurable pin (active low: button to GND)
+    configureExt1Wakeup(Config::WAKEUP_PIN, true);
+    lcd_sleep();
+    esp_deep_sleep_start();
+  }
+};
+#endif
+
+#endif // T_DISPLAY_S3_H

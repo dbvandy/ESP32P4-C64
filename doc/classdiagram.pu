@@ -1,0 +1,212 @@
+@startuml
+title class diagram
+skinparam linetype ortho
+allowmixing
+
+skinparam class {
+  BackgroundColor #f3f3f3
+  ArrowColor Black
+  BorderColor Black
+}
+
+class C64Emu
+class C64Sys
+class VIC
+class ExternalCmds
+class CIA
+class CPU6502
+class SID
+class Hooks
+class Floppy
+class ExtCmdQueue <<singleton>>
+class Snapshot
+class FileConfig
+class RestAPI
+class WiFiManager <<singleton>>
+class OtaManager
+
+component "Platform" as Platform
+
+component "Board" as Board
+C64Emu --> Board
+
+C64Emu *-- C64Sys
+C64Emu ..> OtaManager
+C64Emu ..> FileConfig
+
+component "Keyboard" as Keyboard
+C64Sys --> Keyboard
+
+component "Joystick" as Joystick
+C64Sys --> Joystick
+
+C64Sys --|> CPU6502
+C64Sys o-- ExternalCmds
+C64Sys o-- Hooks
+C64Sys o-- Snapshot
+C64Sys *-- VIC
+C64Sys *-- CIA : 2
+C64Sys *-- SID
+C64Sys *-- Floppy
+
+ExternalCmds --> C64Sys
+ExternalCmds ..> ExtCmdQueue
+Hooks --> C64Sys
+Floppy --|> CPU6502
+
+Snapshot --> C64Sys
+RestAPI ..> ExtCmdQueue
+
+component "Display" as Display
+VIC --> Display
+
+component "Sound" as Sound
+SID --> Sound
+
+component "File" as File
+Floppy --> File
+
+newpage
+
+skinparam class {
+  BackgroundColor #f3f3f3
+  ArrowColor Black
+  BorderColor Black
+}
+
+package "PlatformComponent" {
+interface Platform
+class PlatformESP32 <<os_specific>>
+class PlatformLinux <<os_specific>>
+class PlatformWindows <<os_specific>>
+class Config
+note right of Config
+Globally used platform- and
+board-specific constants
+end note
+class PlatformManager <<singleton>>
+note right of PlatformManager
+Globally used singleton providing
+platform-specific services
+(logging, timers, etc.)
+end note
+
+PlatformESP32 ..|> Platform
+PlatformLinux ..|> Platform
+PlatformWindows ..|> Platform
+PlatformManager --> Platform
+PlatformFactory ..> Platform
+}
+
+package "BoardComponent" {
+class T_HMI <<hw_specific>>
+class T_DISPLAY_S3 <<hw_specific>>
+class Waveshare <<hw_specific>>
+class CYD <<hw_specific>>
+class LEDMatrixBoard <<hw_specific>>
+class Linux <<hw_specific>>
+interface BoardDriver
+class BoardFactory <<factory>>
+
+T_HMI ..|> BoardDriver
+T_DISPLAY_S3 ..|> BoardDriver
+Waveshare ..|> BoardDriver
+CYD ..|> BoardDriver
+LEDMatrixBoard ..|> BoardDriver
+Linux ..|> BoardDriver
+BoardFactory ..> BoardDriver
+}
+
+newpage
+
+skinparam class {
+  BackgroundColor #f3f3f3
+  ArrowColor Black
+  BorderColor Black
+}
+
+package "KeyboardComponent" {
+class BLEKB <<hw_specific>>
+class SDLKB <<hw_specific>>
+class WebKB <<hw_specific>>
+class NoKB
+interface KeyboardDriver
+class KeyboardFactory <<factory>>
+
+BLEKB ..|> KeyboardDriver
+SDLKB ..|> KeyboardDriver
+WebKB ..|> KeyboardDriver
+NoKB ..|> KeyboardDriver
+KeyboardFactory ..> KeyboardDriver
+}
+
+package "JoystickComponent" {
+class ArduinoJoystick <<hw_specific>>
+class SDLJoystick <<hw_specific>>
+class NoJoystick
+interface JoystickDriver
+class JoystickFactory <<factory>>
+
+ArduinoJoystick ..|> JoystickDriver
+SDLJoystick ..|> JoystickDriver
+NoJoystick ..|> JoystickDriver
+JoystickFactory ..> JoystickDriver
+}
+
+newpage
+
+skinparam class {
+  BackgroundColor #f3f3f3
+  ArrowColor Black
+  BorderColor Black
+}
+
+package "DisplayComponent" {
+class ST7789V <<hw_specific>>
+class RM67162 <<hw_specific>>
+class ST7789VSerial <<hw_specific>>
+class ILI9341 <<hw_specific>>
+class LEDMatrixDisplay <<hw_specific>>
+class SDLDisplay <<hw_specific>>
+interface DisplayDriver
+class DisplayFactory <<factory>>
+
+ST7789V ..|> DisplayDriver
+RM67162 ..|> DisplayDriver
+ST7789VSerial ..|> DisplayDriver
+ILI9341 ..|> DisplayDriver
+LEDMatrixDisplay ..|> DisplayDriver
+SDLDisplay ..|> DisplayDriver
+DisplayFactory ..> DisplayDriver
+}
+
+package "SoundComponent" {
+class I2SSound <<hw_specific>>
+class SDLSound <<hw_specific>>
+class NoSound
+interface SoundDriver
+class SoundFactory <<factory>>
+
+I2SSound ..|> SoundDriver
+SDLSound ..|> SoundDriver
+NoSound ..|> SoundDriver
+SoundFactory ..> SoundDriver
+}
+
+package "FileComponent" {
+class SDMMCFile <<hw_specific>>
+class SDCardCYD <<hw_specific>>
+class LinuxFile <<hw_specific>>
+class NoFile
+interface FileDriver
+class FileFactory <<factory>>
+
+SDMMCFile ..|> FileDriver
+SDCardCYD ..|> FileDriver
+LinuxFile ..|> FileDriver
+NoFile ..|> FileDriver
+FileFactory ..> FileDriver
+}
+
+@enduml
+

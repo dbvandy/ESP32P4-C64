@@ -1,0 +1,286 @@
+package org.retroelec.thmic64kb;
+
+import android.Manifest;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.View;
+import android.widget.Button;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+
+public class MainActivity extends AppCompatActivity implements SettingsObserver, NotificationObserver, ConnectionStateListener {
+
+    private static final int PERMISSION_REQUEST_CODE = 1234;
+    private BLEManager bleManager = null;
+    private Settings settings;
+    private Type4Notification type4Notification;
+    private Type5Notification type5Notification;
+    private Type6Notification type6Notification;
+    private Switch bleSwitch;
+    private TextView batteryvoltage;
+    private Button joystick1;
+    private Button joystick2;
+    private boolean joystick1active = false;
+    private boolean joystick2active = false;
+    private boolean versionCheckDone = false;
+    private final Handler handlerBatteryCheck = new Handler(Looper.getMainLooper());
+
+    // get battery voltage
+    private void startPeriodicBatteryCheck() {
+        Runnable runnableBatteryCheck = new Runnable() {
+            @Override
+            public void run() {
+                final MyApplication myApplication = (MyApplication) getApplication();
+                if ((bleManager != null) && (bleManager.getCharacteristic() != null) && (!myApplication.isBleTransferActive())) {
+                    Log.i("THMIC64", "get battery voltage");
+                    bleManager.sendData(new byte[]{Config.GETBATTERYVOLTAGE, (byte) 0x00, (byte) 0x80}, false);
+                }
+                handlerBatteryCheck.postDelayed(this, Config.BATTERY_CHECK_INTERVAL);
+            }
+        };
+        handlerBatteryCheck.postDelayed(runnableBatteryCheck, Config.BATTERY_CHECK_FORFIRSTTIME);
+    }
+
+    // check BLE connection
+    @Override
+    public void onConnected() {
+        runOnUiThread(() -> {
+            bleSwitch.setChecked(true);
+            // refresh GUI from model
+            updateSettings();
+            if (bleManager != null) {
+                // get initial settings
+                bleManager.sendData(new byte[]{Config.GETSTATUS, (byte) 0x00, (byte) 0x80}, false);
+                // get THMIC64KB version
+                bleManager.sendData(new byte[]{Config.GETVERSION, (byte) 0x00, (byte) 0x80}, false);
+            }
+        });
+    }
+
+    @Override
+    public void onDisconnected() {
+        runOnUiThread(() -> {
+            bleSwitch.setChecked(false);
+            joystick1active = false;
+            joystick2active = false;
+            refreshActiveJoystickButtons(false, false);
+            batteryvoltage.setText("BATT: ???");
+            if (bleManager != null) {
+                // try to reconnect automatically
+                bleManager.reconnect();
+            }
+        });
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (bleManager != null) {
+            bleManager.disconnect();
+        }
+        handlerBatteryCheck.removeCallbacksAndMessages(null);
+    }
+
+    private void scanForBLEDevice() {
+        // init BLEManager
+        Log.d("THMIC64", "init BLEManager");
+        bleManager = new BLEManager(this, Config.TARGET_DEVICE_NAME, settings, type4Notification, type5Notification, type6Notification);
+        bleManager.setConnectionStateListener(this);
+        final MyApplication myApplication = (MyApplication) getApplication();
+        myApplication.setBleManager(bleManager);
+
+        if (bleManager != null) {
+            // search for device + connect to device
+            Log.d("THMIC64", "scan for device");
+            bleManager.scanForDevice();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if ((ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                    && (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED)
+                    && (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)) {
+                scanForBLEDevice();
+            } else {
+                Toast.makeText(this, "permissions not granted, please close app", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    private void refreshActiveJoystickButtons(boolean joystick1active, boolean joystick2active) {
+        if (joystick1active) {
+            joystick1.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor("#77cc77")));
+            joystick2.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor("#cc7777")));
+        } else if (joystick2active) {
+            joystick2.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor("#77cc77")));
+            joystick1.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor("#cc7777")));
+        } else {
+            joystick1.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor("#cc7777")));
+            joystick2.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor("#cc7777")));
+        }
+    }
+
+    @Override
+    public void updateSettings() {
+        byte joymode = settings.getJoymode();
+        joystick1active = (joymode == 1);
+        joystick2active = (joymode == 2);
+        refreshActiveJoystickButtons(joystick1active, joystick2active);
+    }
+
+    @Override
+    public void update() {
+        // battery voltage update (from Type5)
+        int voltage = type5Notification.getBatteryVoltage();
+        int percentage = Math.max(0, Math.min(100, ((voltage - 3600) / 6)));
+        batteryvoltage.setText("BATT: " + Integer.toString(percentage) + "%");
+
+        // THMIC64KB version check (from Type6)
+        if (!versionCheckDone) {
+            int fwVersion = type6Notification.getVersion();
+            if (fwVersion > 0) {
+                versionCheckDone = true;
+                if (fwVersion > Config.THMIC64KB_VERSION) {
+                    Toast.makeText(this, "New app version required! ESP THMIC64KB version "
+                            + fwVersion + " needs a newer THMIC64KB app. Please update.", Toast.LENGTH_LONG).show();
+                }
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (settings != null) {
+            settings.registerSettingsObserver(this);
+        }
+        updateSettings();
+        if ((bleManager != null) && (bleManager.getCharacteristic() != null)) {
+            bleManager.sendData(new byte[]{Config.GETSTATUS, (byte) 0x00, (byte) 0x80}, false);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (settings != null) {
+            settings.removeSettingsObserver(this);
+        }
+    }
+
+    @RequiresApi(api = Build.VERSION_CODES.S)
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        setContentView(R.layout.activity_main);
+
+        settings = new Settings();
+        settings.setMinKeyPressedDuration(Config.DEFAULT_MINKEYPRESSEDDURATION);
+        type4Notification = new Type4Notification();
+        type5Notification = new Type5Notification();
+        type5Notification.registerObserver(this);
+        type6Notification = new Type6Notification();
+        type6Notification.registerObserver(this);
+        final MyApplication myApplication = (MyApplication) getApplication();
+        myApplication.setSettings(settings);
+        myApplication.setType4Notification(type4Notification);
+        myApplication.setType5Notification(type5Notification);
+        myApplication.setType6Notification(type6Notification);
+        BLEUtils bleUtils = new BLEUtils(this);
+
+        setContentView(R.layout.activity_main);
+
+        Button keydiv = findViewById(R.id.keydiv);
+        keydiv.setOnClickListener(view -> {
+            Intent i = new Intent(MainActivity.this, DivActivity.class);
+            startActivity(i);
+        });
+
+        Button keykbinp = findViewById(R.id.keykbinp);
+        keykbinp.setOnClickListener(view -> {
+            Intent i = new Intent(MainActivity.this, KBInpActivity.class);
+            startActivity(i);
+        });
+
+        joystick1 = findViewById(R.id.joystick1);
+        joystick1.setOnClickListener(view -> {
+            if (!joystick1active) {
+                // activate joystick 1
+                bleUtils.send(new byte[]{Config.JOYSTICKMODE1, (byte) 0x00, (byte) 0x80}, false);
+                // deactivate joystick 2
+                joystick2active = false;
+            } else {
+                // deactivate joystick 1
+                bleUtils.send(new byte[]{Config.JOYSTICKMODEOFF, (byte) 0x00, (byte) 0x80}, false);
+            }
+            joystick1active = !joystick1active;
+            refreshActiveJoystickButtons(joystick1active, joystick2active);
+        });
+
+        joystick2 = findViewById(R.id.joystick2);
+        joystick2.setOnClickListener(view -> {
+            if (!joystick2active) {
+                // activate joystick 2
+                bleUtils.send(new byte[]{Config.JOYSTICKMODE2, (byte) 0x00, (byte) 0x80}, false);
+                // deactivate joysticks
+                joystick1active = false;
+            } else {
+                // deactivate joystick 2
+                bleUtils.send(new byte[]{Config.JOYSTICKMODEOFF, (byte) 0x00, (byte) 0x80}, false);
+            }
+            joystick2active = !joystick2active;
+            refreshActiveJoystickButtons(joystick1active, joystick2active);
+        });
+
+        final Button keyload = findViewById(R.id.keyload);
+        keyload.setOnTouchListener(bleUtils.createButtonTouchListener(keyload, new byte[]{Config.LOAD, (byte) 0x00, (byte) 0x80}, Config.KEYSELECTEDCOLORACTION, Config.KEYBGDCOLORACTION, true));
+
+        batteryvoltage = findViewById(R.id.batteryvoltage);
+        startPeriodicBatteryCheck();
+
+        bleSwitch = findViewById(R.id.bleSwitch);
+        bleSwitch.setChecked(false);
+        bleSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (isChecked) {
+                if (bleManager != null) {
+                    // activate BLE
+                    bleManager.scanForDevice();
+                }
+            }
+        });
+
+        // add C64 virtual keyboard
+        findViewById(R.id.keyboard);
+
+        if ((ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                && (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED)
+                && (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED)) {
+            scanForBLEDevice();
+        } else {
+            Log.d("THMIC64", "ask for permissions");
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.ACCESS_FINE_LOCATION}, PERMISSION_REQUEST_CODE);
+        }
+    }
+}
