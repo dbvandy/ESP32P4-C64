@@ -74,6 +74,8 @@ private:
   bool talking = false;
   uint8_t currentSecondary = 0;
   bool collectName = false;
+  // After LISTEN+SECOND on an OPEN "#" channel: next iecout bytes are PRINT#.
+  bool receivingRawData = false;
   bool triggererrorchannel = false;
   bool triggercmdchannel = false;
   IDebugBus *debugBus;

@@ -101,6 +101,7 @@ void Floppy::initAttach() {
   talking = false;
   currentSecondary = 0;
   collectName = false;
+  receivingRawData = false;
   triggererrorchannel = false;
   triggercmdchannel = false;
   d64attached = false;
@@ -195,15 +196,26 @@ bool Floppy::writeBufferToDisk(uint8_t bufferId) {
   if (!d64attached || !d64file) {
     return false;
   }
-  int64_t off =
-      calcOffset(bufferMeta[bufferId].track, bufferMeta[bufferId].sector);
+  const uint8_t t = bufferMeta[bufferId].track;
+  const uint8_t s = bufferMeta[bufferId].sector;
+  // Never flush a buffer that was never bound to a real sector (PRINT# alone).
+  if (t < 1 || t > 40 || s >= sectorsPerTrack[t]) {
+    PlatformManager::getInstance().log(
+        LOG_WARN, TAG, "skip dirty flush: invalid T=%u S=%u", (unsigned)t,
+        (unsigned)s);
+    bufferMeta[bufferId].dirty = false;
+    return true;
+  }
+  int64_t off = calcOffset(t, s);
   if (!d64file->seek(off, SEEK_SET)) {
     PlatformManager::getInstance().log(LOG_ERROR, TAG,
                                        "writeBuffer seek failed t=%d s=%d",
-                                       bufferMeta[bufferId].track,
-                                       bufferMeta[bufferId].sector);
+                                       (int)t, (int)s);
     return false;
   }
+  PlatformManager::getInstance().log(
+      LOG_INFO, TAG, "flush buffer %u → T=%u S=%u off=%ld", (unsigned)bufferId,
+      (unsigned)t, (unsigned)s, (long)off);
   if (d64file->write(buffer[bufferId], 256) != 256) {
     PlatformManager::getInstance().log(LOG_ERROR, TAG,
                                        "writeBuffer write failed");
@@ -617,6 +629,37 @@ bool Floppy::handleCmdChannel() {
         }
         channels[15].bufferidx = 0;
         channels[15].buffersize = bufsize;
+      } else if (cmd->command == "M-W") {
+        // M-W: addr_lo addr_hi count data... → drive RAM (job buffers).
+        if (cmd->rawArgs.size() < 3) {
+          lastStatus = 0x02;
+          setError(30);
+          return true;
+        }
+        uint8_t count = cmd->rawArgs[2];
+        if (count == 0) {
+          count = 1;
+        }
+        PlatformManager::getInstance().log(
+            LOG_INFO, TAG, "M-W addr=%04x count=%u payload=%u", addr,
+            (unsigned)count, (unsigned)(cmd->rawArgs.size() - 3));
+        for (uint8_t i = 0; i < count; i++) {
+          if ((size_t)(3 + i) >= cmd->rawArgs.size()) {
+            break;
+          }
+          uint16_t a = (uint16_t)(addr + i);
+          uint8_t v = cmd->rawArgs[3 + i];
+          setMem(a, v);
+          // If this lands in a job buffer page, mark that buffer dirty.
+          if (a >= 0x0300 && a < 0x0800) {
+            uint8_t bnr = (uint8_t)((a - 0x0300) >> 8);
+            if (bnr < 5) {
+              bufferMeta[bnr].dirty = true;
+            }
+          }
+        }
+        setError(0);
+        lastStatus = 0;
       } else if (cmd->command == "M-E") {
         exeSubroutine(addr);
       }
@@ -699,17 +742,26 @@ bool Floppy::handleCmdChannel() {
           exeSubroutine(buf - ram);
           bufferMeta[bnr].dirty = true;
         } else if (isWrite) {
-          // Exact sector image: 256 bytes from the channel buffer → T/S.
-          if (cmd->command == "B-W") {
-            // B-W stores the current buffer pointer as byte 0 of the block.
-            buf[0] = (uint8_t)channels[secch1].bufferidx;
-          }
+          // Exact 256-byte sector image — write what is in the buffer, as-is.
           PlatformManager::getInstance().log(
               LOG_INFO, TAG,
-              "sector WRITE T=%u S=%u off=%ld "
-              "%02x %02x %02x %02x %02x %02x %02x %02x ...",
-              (unsigned)track1, (unsigned)sector1, (long)off, buf[0], buf[1],
-              buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+              "sector WRITE %s ch=%u T=%u S=%u off=%ld idx=%u size=%u dirty=%d",
+              cmd->command.c_str(), (unsigned)secch1, (unsigned)track1,
+              (unsigned)sector1, (long)off,
+              (unsigned)channels[secch1].bufferidx,
+              (unsigned)channels[secch1].buffersize,
+              (int)bufferMeta[bnr].dirty);
+          // Monitor payload: 16-byte rows so serial shows exactly what hits disk.
+          for (uint16_t row = 0; row < kSectorBytes; row += 16) {
+            PlatformManager::getInstance().log(
+                LOG_INFO, TAG,
+                "  %02x: %02x %02x %02x %02x %02x %02x %02x %02x "
+                "%02x %02x %02x %02x %02x %02x %02x %02x",
+                row, buf[row], buf[row + 1], buf[row + 2], buf[row + 3],
+                buf[row + 4], buf[row + 5], buf[row + 6], buf[row + 7],
+                buf[row + 8], buf[row + 9], buf[row + 10], buf[row + 11],
+                buf[row + 12], buf[row + 13], buf[row + 14], buf[row + 15]);
+          }
           if (d64file->write(buf, kSectorBytes) != kSectorBytes) {
             lastStatus = 0x02;
             setError(25);
@@ -882,6 +934,45 @@ bool wildcard_match(const char *text, const char *pattern) {
 }
 
 void Floppy::iecout(uint8_t value) {
+  // PRINT# into OPEN "#" after LISTEN+SECOND (no ATN — that broke LOAD).
+  // 0x3F ends the transfer (same convention collectName uses for UNLISTEN).
+  if (receivingRawData && listening && !collectName) {
+    if (value == 0x3f) {
+      receivingRawData = false;
+      listening = false;
+      lastStatus &= 0x40;
+      setError(0);
+      PlatformManager::getInstance().log(
+          LOG_INFO, TAG, "PRINT# done ch=%u size=%u",
+          (unsigned)currentSecondary,
+          (unsigned)channels[currentSecondary].buffersize);
+      return;
+    }
+    if (currentSecondary != 15 && channels[currentSecondary].isOpen &&
+        channels[currentSecondary].rawBlock) {
+      uint8_t bnr = channels[currentSecondary].buffernr;
+      if (bnr < 5) {
+        uint16_t idx = channels[currentSecondary].bufferidx;
+        if (idx < 256) {
+          buffer[bnr][idx] = value;
+          channels[currentSecondary].bufferidx = (uint16_t)(idx + 1);
+          if (channels[currentSecondary].buffersize < idx + 1) {
+            channels[currentSecondary].buffersize = (uint16_t)(idx + 1);
+          }
+          if (bufferMeta[bnr].track >= 1) {
+            bufferMeta[bnr].dirty = true;
+          }
+          if ((idx & 0x0f) == 0) {
+            PlatformManager::getInstance().log(
+                LOG_INFO, TAG, "PRINT# ch=%u buf[%u]=%02x ...",
+                (unsigned)currentSecondary, (unsigned)idx, value);
+          }
+        }
+      }
+    }
+    return;
+  }
+
   if (collectName) {
     if (value == 0x3f) {
       // end of filename
@@ -914,6 +1005,13 @@ void Floppy::iecout(uint8_t value) {
             channels[currentSecondary].rawBlock = true;
             channels[currentSecondary].bufferidx = 0;
             channels[currentSecondary].buffersize = 0;
+            uint8_t bnr = channels[currentSecondary].buffernr;
+            if (bnr < 5) {
+              memset(buffer[bnr], 0, 256);
+              bufferMeta[bnr].dirty = false;
+              bufferMeta[bnr].track = 0;
+              bufferMeta[bnr].sector = 0;
+            }
             PlatformManager::getInstance().log(
                 LOG_INFO, TAG, "open raw buffer channel %d", currentSecondary);
           }
@@ -976,16 +1074,20 @@ void Floppy::iecout(uint8_t value) {
     if (value == 0x20 + device) {
       listening = true;
       talking = false;
+      receivingRawData = false;
     } else if (value == 0x3f) {
       lastStatus &= 0x40;
       setError(0);
       listening = false;
+      receivingRawData = false;
     } else if (value == 0x40 + device) {
       talking = true;
       listening = false;
+      receivingRawData = false;
     } else if (value == 0x5f) {
       triggererrorchannel = false;
       talking = false;
+      receivingRawData = false;
     } else if (cmd == 0x60) {
       currentSecondary = value & 0x0f;
       if ((currentSecondary == 15) &&
@@ -1002,6 +1104,18 @@ void Floppy::iecout(uint8_t value) {
           name = "";
           collectName = true;
         }
+        receivingRawData = false;
+      } else if (listening && currentSecondary != 15 &&
+                 channels[currentSecondary].isOpen &&
+                 channels[currentSecondary].rawBlock) {
+        // Arm PRINT# capture for this "#" channel (U2/B-W payload).
+        receivingRawData = true;
+        PlatformManager::getInstance().log(
+            LOG_INFO, TAG, "PRINT# arm ch=%u idx=%u",
+            (unsigned)currentSecondary,
+            (unsigned)channels[currentSecondary].bufferidx);
+      } else {
+        receivingRawData = false;
       }
     } else if (cmd == 0xe0) {
       currentSecondary = value & 0x0f;
@@ -1009,9 +1123,11 @@ void Floppy::iecout(uint8_t value) {
       channels[currentSecondary].hasChannelName = false;
       channels[currentSecondary].isOpen = false;
       channels[currentSecondary].rawBlock = false;
+      receivingRawData = false;
       name = "";
     } else if (cmd == 0xf0) {
       currentSecondary = value & 0x0f;
+      receivingRawData = false;
       if (!allocateBufferForChannel(currentSecondary)) {
         channels[currentSecondary].isOpen = false;
         PlatformManager::getInstance().log(
