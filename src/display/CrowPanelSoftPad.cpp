@@ -1,5 +1,5 @@
 /*
- CrowPanel arcade soft pad + NVS persistence (13 programmable slots).
+ CrowPanel arcade soft pad + per-profile NVS persistence.
 */
 #include "../Config.h"
 #if defined(BOARD_CROWPANEL_P4) && defined(USE_CROWPANEL_DISPLAY)
@@ -18,14 +18,17 @@ namespace CrowPanelSoftPad {
 namespace {
 
 static const char *TAG = "SoftPad";
-static constexpr uint32_t kMapMagic = 0x50414433; // "PAD3" (13 slots)
+static constexpr uint32_t kMapMagic = 0x50414434; // "PAD4" profiles
 
 static Slot s_slots[kSlotCount];
+static Slot s_profiles[kProfileCount][kSlotCount];
+static int s_activeProfile = kProfileJoy;
 static bool s_programMode = false;
 static int s_selected = -1;
 static int s_highlight = -1;
 static uint32_t s_glowUntilMs = 0;
 static constexpr uint32_t kGlowMs = 250;
+static constexpr int kProfileBarH = 40;
 
 struct Circ {
   int cx, cy, r;
@@ -35,18 +38,37 @@ struct Rect {
 };
 
 static Circ s_btn[kSlotCount];
-static Circ s_prog;
 static Rect s_body;
-static Rect s_logo{}; // portrait rect for C64 mark above D-pad
+static Rect s_logo{};
+static Rect s_profileBtn[kProfileCount]{};
 
 #pragma pack(push, 1)
 struct MapBlob {
   uint32_t magic;
-  Slot slots[kSlotCount];
+  uint8_t active;
+  uint8_t _pad[3];
+  Slot profiles[kProfileCount][kSlotCount];
 };
 #pragma pack(pop)
 
-static void setDefaultSlots() {
+static void clearSlot(Slot &s) {
+  s.dc00 = 0xff;
+  s.dc01 = 0xff;
+  s.modifier = 0;
+  memset(s.label, 0, sizeof(s.label));
+}
+
+static void setSlot(Slot &s, const CodeTripleS &code, const char *lab) {
+  s.dc00 = code.dc00;
+  s.dc01 = code.dc01;
+  s.modifier = code.modifier;
+  memset(s.label, 0, sizeof(s.label));
+  if (lab && lab[0]) {
+    strncpy(s.label, lab, sizeof(s.label) - 1);
+  }
+}
+
+static void fillUserDefaults(Slot *dst) {
   const CodeTripleS defs[kSlotCount] = {
       C64_KEYCODE_Z,     C64_KEYCODE_X,     C64_KEYCODE_C,
       C64_KEYCODE_A,     C64_KEYCODE_S,     C64_KEYCODE_D,
@@ -57,12 +79,28 @@ static void setDefaultSlots() {
                                   "SPC", "RET", "F1", "UP", "DN", "LT",
                                   "RT"};
   for (int i = 0; i < kSlotCount; i++) {
-    s_slots[i].dc00 = defs[i].dc00;
-    s_slots[i].dc01 = defs[i].dc01;
-    s_slots[i].modifier = defs[i].modifier;
-    strncpy(s_slots[i].label, labs[i], sizeof(s_slots[i].label) - 1);
-    s_slots[i].label[sizeof(s_slots[i].label) - 1] = '\0';
+    setSlot(dst[i], defs[i], labs[i]);
   }
+}
+
+static void fillJoyDefaults(Slot *dst) {
+  for (int i = 0; i < kSlotCount; i++) {
+    clearSlot(dst[i]);
+  }
+  setSlot(dst[kJoyFireSlot], C64_KEYCODE_SPACE, "FIRE");
+  // kJoyBlankSlot stays cleared (visible but blank).
+  setSlot(dst[9], C64_KEYCODE_UP, "UP");
+  setSlot(dst[10], C64_KEYCODE_DOWN, "DN");
+  setSlot(dst[11], C64_KEYCODE_LEFT, "LT");
+  setSlot(dst[12], C64_KEYCODE_RIGHT, "RT");
+}
+
+static void syncActiveFromProfile() {
+  memcpy(s_slots, s_profiles[s_activeProfile], sizeof(s_slots));
+}
+
+static void syncProfileFromActive() {
+  memcpy(s_profiles[s_activeProfile], s_slots, sizeof(s_slots));
 }
 
 static void saveNvs() {
@@ -71,28 +109,39 @@ static void saveNvs() {
     PlatformManager::getInstance().log(LOG_ERROR, TAG, "NVS begin failed");
     return;
   }
+  syncProfileFromActive();
   MapBlob blob{};
   blob.magic = kMapMagic;
-  memcpy(blob.slots, s_slots, sizeof(s_slots));
-  prefs.putBytes("map3", &blob, sizeof(blob));
+  blob.active = (uint8_t)s_activeProfile;
+  memcpy(blob.profiles, s_profiles, sizeof(s_profiles));
+  prefs.putBytes("map4", &blob, sizeof(blob));
   prefs.end();
-  PlatformManager::getInstance().log(LOG_INFO, TAG, "saved pad map (13 slots)");
+  PlatformManager::getInstance().log(LOG_INFO, TAG, "saved profiles (active=%d)",
+                                     s_activeProfile);
 }
 
 static void loadNvs() {
-  setDefaultSlots();
+  fillJoyDefaults(s_profiles[kProfileJoy]);
+  fillUserDefaults(s_profiles[kProfileUser1]);
+  fillUserDefaults(s_profiles[kProfileUser2]);
+  fillUserDefaults(s_profiles[kProfileUser3]);
+  s_activeProfile = kProfileJoy;
+
   Preferences prefs;
   if (!prefs.begin("softpad", true)) {
+    syncActiveFromProfile();
     return;
   }
   MapBlob blob{};
-  size_t n = prefs.getBytesLength("map3");
-  if (n == sizeof(blob) && prefs.getBytes("map3", &blob, sizeof(blob)) == n &&
+  size_t n = prefs.getBytesLength("map4");
+  if (n == sizeof(blob) && prefs.getBytes("map4", &blob, sizeof(blob)) == n &&
       blob.magic == kMapMagic) {
-    memcpy(s_slots, blob.slots, sizeof(s_slots));
-    PlatformManager::getInstance().log(LOG_INFO, TAG, "loaded pad map");
+    memcpy(s_profiles, blob.profiles, sizeof(s_profiles));
+    s_activeProfile = blob.active < kProfileCount ? blob.active : kProfileJoy;
+    PlatformManager::getInstance().log(LOG_INFO, TAG, "loaded profiles");
   }
   prefs.end();
+  syncActiveFromProfile();
 }
 
 static void layout() {
@@ -103,69 +152,89 @@ static void layout() {
   const int right = (int)CrowPanelHw::KB_PORTRAIT_W - 6;
   const int areaH = bottom - top;
   const int areaW = right - left;
-  if (areaH < 60 || areaW < 120) {
+  if (areaH < 80 || areaW < 120) {
     memset(s_btn, 0, sizeof(s_btn));
-    s_prog = {0, 0, 0};
+    memset(s_profileBtn, 0, sizeof(s_profileBtn));
     s_body = {0, 0, 0, 0};
     s_logo = {0, 0, 0, 0};
     return;
   }
 
-  // Beige rounded panel body (grey margin drawn around it).
   s_body = {left, top, areaW, areaH};
 
-  // Button radius: pack as large as possible (3×3 left + D-pad cross).
   const int padIn = 8;
+  const int profileTop = bottom - kProfileBarH;
+  const int playBottom = profileTop - 4;
+  const int playH = playBottom - top;
   const int halfW = (areaW - 3 * padIn) / 2;
-  const int usableH = areaH - 2 * padIn;
-  // 3 rows / 3 cols need ~3*(2r) + 2*gap.
+  const int usableH = playH - 2 * padIn;
+  const bool joy = (s_activeProfile == kProfileJoy);
+
   int r = usableH / 7;
   if (r > halfW / 7) {
     r = halfW / 7;
   }
-  if (r < 18) {
-    r = 18;
+  if (r < 16) {
+    r = 16;
   }
-  if (r > 42) {
-    r = 42;
+  if (r > 40) {
+    r = 40;
   }
+  // JOY mode: fewer visible blue buttons — bump those a bit.
+  // D-pad stays at normal size.
+  int rJoy = (r * 5) / 4 + 2;
+  if (rJoy > 48) {
+    rJoy = 48;
+  }
+  const int rBlue = joy ? rJoy : r;
   const int gap = r / 5 + 4;
+  const int gapJoy = rJoy / 5 + 4;
 
-  // Left blue cluster (3×3), centered in left half of body.
-  const int lx0 = left + padIn + halfW / 2;
-  const int ly0 = top + areaH / 2;
-  const int ldx = 2 * r + gap;
-  const int ldy = 2 * r + gap;
+  // Left blue cluster: USER profiles keep original position; JOY shifts in.
+  const int blueShift = joy ? (halfW / 5 + 10) : 0;
+  const int lx0 = left + padIn + halfW / 2 + blueShift;
+  const int ly0 = top + playH / 2;
+  const int ldx = 2 * rBlue + (joy ? gapJoy : gap);
+  const int ldy = 2 * rBlue + (joy ? gapJoy : gap);
   for (int row = 0; row < 3; row++) {
     for (int col = 0; col < 3; col++) {
       int i = row * 3 + col;
-      s_btn[i] = {lx0 - ldx + col * ldx, ly0 - ldy + row * ldy, r};
+      s_btn[i] = {lx0 - ldx + col * ldx, ly0 - ldy + row * ldy, rBlue};
     }
   }
 
-  // Right red D-pad cross — nudged down a bit for the C64 logo above.
-  const int rx0 = left + padIn + halfW + padIn + halfW / 2;
-  const int ry0 = top + areaH / 2 + 12;
-  const int step = (7 * r) / 5 + gap;
-  s_btn[9] = {rx0, ry0 - step, r};  // UP
-  s_btn[10] = {rx0, ry0 + step, r}; // DN
-  s_btn[11] = {rx0 - step, ry0, r}; // LT
-  s_btn[12] = {rx0 + step, ry0, r}; // RT
-
-  // C64 logo bitmap above the UP button (drawn 90° CCW → vertical pill).
-  // Portrait (logoW × logoH) maps to on-screen (logoH × logoW).
+  // Logo near top, centered over the D-pad column.
   const int logoW = C64_LOGO_W;
   const int logoH = C64_LOGO_H;
-  const int upLeft = (ry0 - step) - r; // smaller py = toward keys / "above"
-  int logoPy = upLeft - 6 - logoH;
-  if (logoPy < top + padIn) {
-    logoPy = top + padIn;
-  }
-  s_logo = {rx0 - logoW / 2, logoPy, logoW, logoH};
+  const int rx0 = left + padIn + halfW + padIn + halfW / 2;
+  const int logoCx = rx0;
+  const int logoPy = top + 10;
+  s_logo = {logoCx - logoW / 2, logoPy, logoW, logoH};
 
-  // Small PROG in upper-right of the body.
-  const int pr = (r * 2) / 5;
-  s_prog = {right - padIn - pr - 4, top + padIn + pr + 2, pr < 10 ? 10 : pr};
+  // Right red D-pad — normal size, centered between logo and profile bank.
+  const int logoBottom = logoPy + logoH;
+  const int step = (7 * r) / 5 + gap;
+  int ry0 = (logoBottom + profileTop) / 2;
+  // Keep the whole cross inside the play band.
+  if (ry0 - step - r < logoBottom + 4) {
+    ry0 = logoBottom + 4 + step + r;
+  }
+  if (ry0 + step + r > profileTop - 4) {
+    ry0 = profileTop - 4 - step - r;
+  }
+  s_btn[9] = {rx0, ry0 - step, r};
+  s_btn[10] = {rx0, ry0 + step, r};
+  s_btn[11] = {rx0 - step, ry0, r};
+  s_btn[12] = {rx0 + step, ry0, r};
+
+  // Bottom bank: JOY / USER1 / USER2 / USER3 — equal size.
+  const int gapP = 6;
+  const int btnW = (areaW - gapP * (kProfileCount + 1)) / kProfileCount;
+  const int btnH = kProfileBarH - 8;
+  const int by = profileTop + 4;
+  for (int i = 0; i < kProfileCount; i++) {
+    s_profileBtn[i] = {left + gapP + i * (btnW + gapP), by, btnW, btnH};
+  }
 }
 
 static bool inCircle(const Circ &c, int px, int py) {
@@ -177,6 +246,10 @@ static bool inCircle(const Circ &c, int px, int py) {
   return dx * dx + dy * dy <= c.r * c.r;
 }
 
+static bool inRect(const Rect &r, int px, int py) {
+  return r.w > 0 && px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+}
+
 static void portraitFromTouch(int tx, int ty, int &px, int &py) {
   px = (int)CrowPanelHw::PANEL_H - 1 - ty;
   py = tx - (int)CrowPanelHw::KB_X0;
@@ -185,8 +258,8 @@ static void portraitFromTouch(int tx, int ty, int &px, int &py) {
 } // namespace
 
 void init() {
-  layout();
   loadNvs();
+  layout();
   s_programMode = false;
   s_selected = -1;
   s_highlight = -1;
@@ -207,7 +280,6 @@ void tick() {
   if (s_highlight < 0 || s_glowUntilMs == 0) {
     return;
   }
-  // Keep glow while programming a selected slot.
   if (s_programMode && s_selected >= 0 && s_highlight == s_selected) {
     return;
   }
@@ -229,6 +301,55 @@ const Slot &slot(int i) {
   return s_slots[i];
 }
 
+bool slotVisible(int i) {
+  if (i < 0 || i >= kSlotCount) {
+    return false;
+  }
+  if (s_activeProfile != kProfileJoy) {
+    return true;
+  }
+  if (isArrowSlot(i)) {
+    return true;
+  }
+  return i == kJoyFireSlot || i == kJoyBlankSlot;
+}
+
+int activeProfile() { return s_activeProfile; }
+
+const char *profileLabel(int profile) {
+  switch (profile) {
+  case kProfileJoy:
+    return "JOY";
+  case kProfileUser1:
+    return "USER1";
+  case kProfileUser2:
+    return "USER2";
+  case kProfileUser3:
+    return "USER3";
+  default:
+    return "?";
+  }
+}
+
+void setProfile(int profile) {
+  if (profile < 0 || profile >= kProfileCount || profile == s_activeProfile) {
+    if (profile == s_activeProfile) {
+      CrowPanelHw::requestKeyboardRedraw();
+    }
+    return;
+  }
+  syncProfileFromActive();
+  s_activeProfile = profile;
+  syncActiveFromProfile();
+  layout(); // JOY uses larger buttons / recentered D-pad
+  s_programMode = false;
+  s_selected = -1;
+  saveNvs();
+  CrowPanelHw::requestKeyboardRedraw();
+  PlatformManager::getInstance().log(LOG_INFO, TAG, "profile %s",
+                                     profileLabel(profile));
+}
+
 void onProg() {
   if (s_programMode) {
     s_programMode = false;
@@ -245,6 +366,9 @@ void onProg() {
 
 void onSelectSlot(int slotIdx) {
   if (!s_programMode || slotIdx < 0 || slotIdx >= kSlotCount) {
+    return;
+  }
+  if (!slotVisible(slotIdx)) {
     return;
   }
   s_selected = slotIdx;
@@ -286,11 +410,15 @@ Hit hitTest(int touchX, int touchY) {
       py >= (int)CrowPanelHw::KB_PORTRAIT_H) {
     return Hit::None;
   }
-  // Prefer PROG if overlapping (it's small / upper-right).
-  if (inCircle(s_prog, px, py)) {
-    return Hit::Prog;
+  for (int i = 0; i < kProfileCount; i++) {
+    if (inRect(s_profileBtn[i], px, py)) {
+      return static_cast<Hit>(kProfileHitBase + i);
+    }
   }
   for (int i = 0; i < kSlotCount; i++) {
+    if (!slotVisible(i)) {
+      continue;
+    }
     if (inCircle(s_btn[i], px, py)) {
       return static_cast<Hit>(i);
     }
@@ -306,7 +434,7 @@ void bodyPortrait(int &x, int &y, int &w, int &h) {
 }
 
 void buttonPortrait(int i, int &cx, int &cy, int &r) {
-  if (i < 0 || i >= kSlotCount) {
+  if (i < 0 || i >= kSlotCount || !slotVisible(i)) {
     cx = cy = r = 0;
     return;
   }
@@ -315,11 +443,6 @@ void buttonPortrait(int i, int &cx, int &cy, int &r) {
   r = s_btn[i].r;
 }
 
-void progPortrait(int &cx, int &cy, int &r) {
-  cx = s_prog.cx;
-  cy = s_prog.cy;
-  r = s_prog.r;
-}
 
 void logoPortrait(int &cx, int &cy, int &w, int &h) {
   cx = s_logo.x + s_logo.w / 2;
@@ -328,8 +451,18 @@ void logoPortrait(int &cx, int &cy, int &w, int &h) {
   h = s_logo.h;
 }
 
+void profilePortrait(int profile, int &x, int &y, int &w, int &h) {
+  if (profile < 0 || profile >= kProfileCount) {
+    x = y = w = h = 0;
+    return;
+  }
+  x = s_profileBtn[profile].x;
+  y = s_profileBtn[profile].y;
+  w = s_profileBtn[profile].w;
+  h = s_profileBtn[profile].h;
+}
+
 void portraitToFb(int px, int py, int &fx, int &fy) {
-  // Same transform as crowKeyRect: portrait → landscape KB strip.
   fx = (int)CrowPanelHw::KB_X0 + py;
   fy = (int)CrowPanelHw::PANEL_H - 1 - px;
 }

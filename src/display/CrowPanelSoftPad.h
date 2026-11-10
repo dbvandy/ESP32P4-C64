@@ -3,8 +3,9 @@
   - Left: 9 big blue programmable buttons (3×3)
   - Right: 4 big red programmable buttons (D-pad)
   - C64 rainbow logo above the D-pad
-  - PROG: small button, upper-right of the body
- Mappings persist in NVS and reload on boot.
+  - Bottom bank: JOY / USER1 / USER2 / USER3
+  - PROG lives on the controls strip under D64
+ Mappings persist per-profile in NVS and reload on boot.
 */
 #ifndef CROWPANEL_SOFT_PAD_H
 #define CROWPANEL_SOFT_PAD_H
@@ -20,6 +21,16 @@ namespace CrowPanelSoftPad {
 // 0..8 left (blue 3×3), 9..12 right arrows UP DN LT RT (red)
 constexpr int kSlotCount = 13;
 constexpr int kProgHit = 100;
+constexpr int kProfileCount = 4;
+constexpr int kProfileJoy = 0;
+constexpr int kProfileUser1 = 1;
+constexpr int kProfileUser2 = 2;
+constexpr int kProfileUser3 = 3;
+constexpr int kProfileHitBase = 110; // +0..3
+
+// JOY visible blue slots: left-middle FIRE + center blank.
+constexpr int kJoyFireSlot = 3;  // row1 col0
+constexpr int kJoyBlankSlot = 4; // row1 col1
 
 enum class Hit : int16_t {
   None = -1,
@@ -37,6 +48,10 @@ enum class Hit : int16_t {
   ArrowLeft = 11,
   ArrowRight = 12,
   Prog = kProgHit,
+  ProfileJoy = kProfileHitBase + 0,
+  ProfileUser1 = kProfileHitBase + 1,
+  ProfileUser2 = kProfileHitBase + 2,
+  ProfileUser3 = kProfileHitBase + 3,
 };
 
 struct Slot {
@@ -50,6 +65,9 @@ struct Slot {
 
 inline bool isArrowSlot(int i) { return i >= 9 && i <= 12; }
 inline bool isBlueSlot(int i) { return i >= 0 && i <= 8; }
+inline bool isProfileHit(int id) {
+  return id >= kProfileHitBase && id < kProfileHitBase + kProfileCount;
+}
 
 void init();
 Hit hitTest(int touchX, int touchY);
@@ -62,17 +80,21 @@ void onSelectSlot(int slot);
 bool assignFromKey(const char *label, const CodeTripleS &code);
 
 const Slot &slot(int i);
+bool slotVisible(int i); // false in JOY for hidden blue buttons
 
-int highlight();          // lit button id, or -1
+int activeProfile(); // 0..3
+void setProfile(int profile);
+const char *profileLabel(int profile);
+
+int highlight();           // lit button id, or -1
 void setHighlight(int id); // starts a ~0.25s under-light
 void tick();               // expire timed glow
 
 // Portrait geometry for drawing (centers + radii).
 void bodyPortrait(int &x, int &y, int &w, int &h);
 void buttonPortrait(int i, int &cx, int &cy, int &r);
-void progPortrait(int &cx, int &cy, int &r);
-// C64 logo mark centered above the D-pad (portrait center + size).
 void logoPortrait(int &cx, int &cy, int &w, int &h);
+void profilePortrait(int profile, int &x, int &y, int &w, int &h);
 
 // Portrait → landscape FB point (for centers).
 void portraitToFb(int px, int py, int &fx, int &fy);

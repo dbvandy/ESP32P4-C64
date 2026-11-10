@@ -241,10 +241,12 @@ void CrowPanelTouchKB::scanKeyboard() {
     if (sh != Hit::None) {
       CrowPanelSoftPad::setHighlight((int)sh);
       CrowPanelHw::setHighlight(-1);
-      if (sh == Hit::Prog) {
+      if (CrowPanelSoftPad::isProfileHit((int)sh)) {
         clearHold();
-        CrowPanelSoftPad::onProg();
-      } else {
+        CrowPanelSoftPad::setProfile((int)sh - CrowPanelSoftPad::kProfileHitBase);
+        return;
+      }
+      {
         const int sid = (int)sh;
         if (CrowPanelSoftPad::programMode()) {
           clearHold();
@@ -318,6 +320,13 @@ void CrowPanelTouchKB::scanKeyboard() {
     CrowPanelSetup::open();
     CrowPanelHw::setHighlight(-1);
     CrowPanelSoftPad::setHighlight(-1);
+    return;
+  }
+
+  if (k.kind == CrowKeyKind::ExtProg) {
+    clearHold();
+    CrowPanelSoftPad::onProg();
+    CrowPanelHw::setHighlight(-1);
     return;
   }
 

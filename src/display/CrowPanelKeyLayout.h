@@ -27,6 +27,7 @@ enum class CrowKeyKind : uint8_t {
   ExtReset,
   ExtRestore,
   ExtSetup,
+  ExtProg,
   ExtVolUp,
   ExtVolDn,
   ExtJoy1,
@@ -136,15 +137,15 @@ inline constexpr CrowKeyDef CrowKeys[] = {
     {3, 4, 10, "SPACE", nullptr, CrowKeyKind::Matrix, C64_KEYCODE_SPACE},
 
     // ---- T-HMI-C64 controls below keyboard ----
-    {0, 5, 3, "LIST", nullptr, CrowKeyKind::ExtList, {0xff, 0xff, 0}},
+    {0, 5, 3, "D64", nullptr, CrowKeyKind::ExtAttach, {0xff, 0xff, 0}},
     {3, 5, 3, "LOAD", nullptr, CrowKeyKind::ExtLoad, {0xff, 0xff, 0}},
     {6, 5, 3, "RUN", nullptr, CrowKeyKind::ExtRun, {0xff, 0xff, 0}},
-    {9, 5, 3, "D64", nullptr, CrowKeyKind::ExtAttach, {0xff, 0xff, 0}},
+    {9, 5, 3, "LIST", nullptr, CrowKeyKind::ExtList, {0xff, 0xff, 0}},
     {12, 5, 3, "EJT", nullptr, CrowKeyKind::ExtDetach, {0xff, 0xff, 0}},
     {15, 5, 3, "RST", nullptr, CrowKeyKind::ExtReset, {0xff, 0xff, 0}},
 
-    {0, 6, 3, "V-", nullptr, CrowKeyKind::ExtVolDn, {0xff, 0xff, 0}},
-    {3, 6, 3, "V+", nullptr, CrowKeyKind::ExtVolUp, {0xff, 0xff, 0}},
+    {0, 6, 3, "PROG", nullptr, CrowKeyKind::ExtProg, {0xff, 0xff, 0}},
+    {3, 6, 3, "", nullptr, CrowKeyKind::None, {0xff, 0xff, 0}},
     {6, 6, 3, "J1", nullptr, CrowKeyKind::ExtJoy1, {0xff, 0xff, 0}},
     {9, 6, 3, "J2", nullptr, CrowKeyKind::ExtJoy2, {0xff, 0xff, 0}},
     {12, 6, 3, "JOFF", nullptr, CrowKeyKind::ExtJoyOff, {0xff, 0xff, 0}},
@@ -159,9 +160,9 @@ inline bool crowIsCtrlKind(CrowKeyKind k) {
          k == CrowKeyKind::ExtRun || k == CrowKeyKind::ExtAttach ||
          k == CrowKeyKind::ExtDetach || k == CrowKeyKind::ExtReset ||
          k == CrowKeyKind::ExtRestore || k == CrowKeyKind::ExtSetup ||
-         k == CrowKeyKind::ExtVolUp || k == CrowKeyKind::ExtVolDn ||
-         k == CrowKeyKind::ExtJoy1 || k == CrowKeyKind::ExtJoy2 ||
-         k == CrowKeyKind::ExtJoyOff;
+         k == CrowKeyKind::ExtProg || k == CrowKeyKind::ExtVolUp ||
+         k == CrowKeyKind::ExtVolDn || k == CrowKeyKind::ExtJoy1 ||
+         k == CrowKeyKind::ExtJoy2 || k == CrowKeyKind::ExtJoyOff;
 }
 
 inline bool crowExtCmdForKind(CrowKeyKind kind, ExtCmd &cmd, uint8_t &param0) {
@@ -191,6 +192,9 @@ inline bool crowExtCmdForKind(CrowKeyKind kind, ExtCmd &cmd, uint8_t &param0) {
     return true;
   case CrowKeyKind::ExtSetup:
     // CrowPanelTouchKB opens the SETUP overlay.
+    return false;
+  case CrowKeyKind::ExtProg:
+    // CrowPanelTouchKB toggles soft-pad program mode.
     return false;
   case CrowKeyKind::ExtVolUp:
     cmd = ExtCmd::INCVOLUME;

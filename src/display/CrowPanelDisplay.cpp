@@ -172,6 +172,32 @@ static void fillCircle(uint16_t *fb, int cx, int cy, int r, uint16_t c) {
   }
 }
 
+static void fillRoundRect(uint16_t *fb, int bx, int by, int bw, int bh, int rr,
+                          uint16_t fill, uint16_t edge) {
+  if (bw <= 0 || bh <= 0) {
+    return;
+  }
+  if (rr * 2 > bw) {
+    rr = bw / 2;
+  }
+  if (rr * 2 > bh) {
+    rr = bh / 2;
+  }
+  if (rr < 1) {
+    rr = 1;
+  }
+  fillRect(fb, bx + rr, by, bw - 2 * rr, bh, fill);
+  fillRect(fb, bx, by + rr, bw, bh - 2 * rr, fill);
+  fillCircle(fb, bx + rr, by + rr, rr, fill);
+  fillCircle(fb, bx + bw - 1 - rr, by + rr, rr, fill);
+  fillCircle(fb, bx + rr, by + bh - 1 - rr, rr, fill);
+  fillCircle(fb, bx + bw - 1 - rr, by + bh - 1 - rr, rr, fill);
+  fillRect(fb, bx + rr, by, bw - 2 * rr, 1, edge);
+  fillRect(fb, bx + rr, by + bh - 1, bw - 2 * rr, 1, edge);
+  fillRect(fb, bx, by + rr, 1, bh - 2 * rr, edge);
+  fillRect(fb, bx + bw - 1, by + rr, 1, bh - 2 * rr, edge);
+}
+
 static void drawChar8Rot90CCW(uint16_t *fb, int cx, int cy, uint8_t ch,
                               uint16_t fg, uint16_t bg, int scale) {
   // Draw an 8x8 glyph rotated 90° CCW, centered at (cx, cy).
@@ -570,12 +596,14 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     return;
   }
   const uint16_t bg = 0x3186;
-  const uint16_t face = 0x73ae;
-  const uint16_t faceHi = 0xb5d6;
-  const uint16_t faceMod = 0x064a;
-  const uint16_t faceOn = 0xe74e;
-  const uint16_t faceCtrl = 0x4a69; // T-HMI control strip
-  const uint16_t ink = 0x0000;
+  // Classic brown C64-style keys with white legends.
+  const uint16_t face = 0x62C8;    // warm brown
+  const uint16_t faceHi = 0x8C2A;  // lighter brown (pressed)
+  const uint16_t faceMod = 0x49E4; // darker brown (mods idle)
+  const uint16_t faceOn = 0xB4E6;  // highlight brown (mods on)
+  const uint16_t faceCtrl = 0x51A5; // control-strip brown
+  const uint16_t ink = 0xFFFF;     // white characters
+  const uint16_t keyEdge = 0x3143;
 
   fillRect(fb, CrowPanelHw::KB_X0, 0, CrowPanelHw::KB_W, CrowPanelHw::KB_H, bg);
 
@@ -600,7 +628,9 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     int x, y, w, h;
     crowKeyRect(k, x, y, w, h);
     uint16_t col = face;
-    if (crowIsCtrlKind(k.kind)) {
+    if (k.kind == CrowKeyKind::ExtProg && CrowPanelSoftPad::programMode()) {
+      col = faceOn;
+    } else if (crowIsCtrlKind(k.kind)) {
       col = faceCtrl;
     } else if (k.kind == CrowKeyKind::ModShift ||
                k.kind == CrowKeyKind::ShiftLock) {
@@ -613,13 +643,15 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     if (i == hi) {
       col = faceHi;
     }
-    fillRect(fb, x, y, w, h, col);
-    fillRect(fb, x, y, w, 1, ink);
-    fillRect(fb, x, y + h - 1, w, 1, ink);
-    fillRect(fb, x, y, 1, h, ink);
-    fillRect(fb, x + w - 1, y, 1, h, ink);
-    drawKeyGlyph(x + w / 2, y + h / 2, crowKeyFaceLabel(k, shifted), ink,
-                 col);
+    const int rr = (w < h ? w : h) / 3;
+    fillRoundRect(fb, x, y, w, h, rr < 5 ? 5 : rr, col, keyEdge);
+    const char *lab = crowKeyFaceLabel(k, shifted);
+    if (k.kind == CrowKeyKind::ExtProg && CrowPanelSoftPad::programMode()) {
+      lab = "SET";
+    }
+    if (lab && lab[0]) {
+      drawKeyGlyph(x + w / 2, y + h / 2, lab, ink, col);
+    }
   }
 
   // Disk name label to the right of SPACE (cols 13-17, row 4).
@@ -629,11 +661,8 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     crowKeyRect(diskSlot, x, y, w, h);
     const char *disk = CrowPanelHw::attachedDisk();
     const uint16_t diskFace = disk && disk[0] ? faceOn : faceCtrl;
-    fillRect(fb, x, y, w, h, diskFace);
-    fillRect(fb, x, y, w, 1, ink);
-    fillRect(fb, x, y + h - 1, w, 1, ink);
-    fillRect(fb, x, y, 1, h, ink);
-    fillRect(fb, x + w - 1, y, 1, h, ink);
+    const int rr = (w < h ? w : h) / 3;
+    fillRoundRect(fb, x, y, w, h, rr < 5 ? 5 : rr, diskFace, keyEdge);
     drawKeyGlyph(x + w / 2, y + h / 2, (disk && disk[0]) ? disk : "----", ink,
                  diskFace);
     // Drive activity LED (red) while sectors are being read.
@@ -655,7 +684,6 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     const uint16_t redLit = 0xFBAE;
     const uint16_t bezel = 0x1082;
     const uint16_t spec = 0xFFFF;
-    const uint16_t progFace = programMode() ? faceOn : 0xC618;
     const int shi = highlight();
     const int margin = 6; // grey ring around beige panel
 
@@ -739,13 +767,18 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
       fillCircle(fb, cx, cy, pr / 2, inner);
       const char *lab = slot(slotIdx).label;
       // Bigger face letter (2×). Red buttons use white text for contrast.
-      const int labScale = 2;
-      const uint16_t labInk = redBtn ? (uint16_t)0xFFFF : ink;
-      drawKeyGlyph(cx, cy, (lab && lab[0]) ? lab : "--", labInk, inner,
-                   labScale);
+      // Blank/unlabeled slots stay empty (no "--").
+      if (lab && lab[0]) {
+        const int labScale = 2;
+        const uint16_t labInk = redBtn ? (uint16_t)0xFFFF : ink;
+        drawKeyGlyph(cx, cy, lab, labInk, inner, labScale);
+      }
     };
 
     for (int i = 0; i < kSlotCount; i++) {
+      if (!slotVisible(i)) {
+        continue;
+      }
       drawArcadeBtn(i, isArrowSlot(i));
     }
 
@@ -779,21 +812,32 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
       }
     }
 
-    // Small PROG in upper-right.
+    // Profile bank: JOY / USER1 / USER2 / USER3 along the bottom.
     {
-      int pcx, pcy, pr;
-      progPortrait(pcx, pcy, pr);
-      if (pr > 0) {
-        int cx, cy;
-        portraitToFb(pcx, pcy, cx, cy);
-        const bool pressed = (shi == kProgHit);
-        if (pressed) {
-          fillCircle(fb, cx, cy, pr + 3, 0xFFE0);
+      auto p2fbRect = [&](int px, int py, int pw, int ph, int &x, int &y,
+                          int &w, int &h) {
+        int x0, y0, x1, y1;
+        portraitToFb(px, py, x0, y0);
+        portraitToFb(px + pw - 1, py + ph - 1, x1, y1);
+        x = x0 < x1 ? x0 : x1;
+        y = y0 < y1 ? y0 : y1;
+        w = (x0 > x1 ? x0 : x1) - x + 1;
+        h = (y0 > y1 ? y0 : y1) - y + 1;
+      };
+      const int active = activeProfile();
+      for (int i = 0; i < kProfileCount; i++) {
+        int px, py, pw, ph, x, y, w, h;
+        profilePortrait(i, px, py, pw, ph);
+        if (pw <= 0 || ph <= 0) {
+          continue;
         }
-        fillCircle(fb, cx, cy, pr, bezel);
-        fillCircle(fb, cx, cy, pr - 2, progFace);
-        fillCircle(fb, cx - pr / 4, cy - pr / 4, pr / 5, spec);
-        drawKeyGlyph(cx, cy, programMode() ? "SET" : "P", ink, progFace);
+        p2fbRect(px, py, pw, ph, x, y, w, h);
+        const bool on = (i == active);
+        const bool pressed = (shi == kProfileHitBase + i);
+        const uint16_t faceP = on ? faceOn : 0xC618;
+        const uint16_t edgeP = pressed ? 0xFFFF : beigeEdge;
+        fillRoundRectFb(x, y, w, h, 8, faceP, edgeP);
+        drawKeyGlyph(x + w / 2, y + h / 2, profileLabel(i), ink, faceP, 1);
       }
     }
   }

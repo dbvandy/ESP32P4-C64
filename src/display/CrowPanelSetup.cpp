@@ -53,7 +53,7 @@ static void layout() {
   const int pw = CrowPanelHw::KB_PORTRAIT_W;
   const int ph = CrowPanelHw::KB_PORTRAIT_H;
   const int cardW = 320; // portrait width  → on-screen height
-  const int cardH = 220; // portrait height → on-screen width (room for labels)
+  const int cardH = 220; // portrait height → on-screen width
   s_panel = {(pw - cardW) / 2, (ph - cardH) / 2, cardW, cardH};
 
   const int pad = 18;
@@ -61,7 +61,6 @@ static void layout() {
   const int hitThick = 36;
   const int trackLen = s_panel.w - 2 * pad;
   const int titleBand = 36;
-  // Leave room for a label above each slider in portrait space.
   const int rowPitch = 64;
   const int labelGap = 18;
 
