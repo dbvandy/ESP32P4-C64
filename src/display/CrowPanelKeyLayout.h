@@ -1,6 +1,6 @@
 /*
  Commodore 64 physical keyboard + T-HMI-C64 control strip for CrowPanel.
- Portrait-logical: C64 keyboard on top, emulator controls below.
+ Portrait-logical: soft pad on top, C64 keyboard + controls below.
  Shift / Shift-Lock swaps legends to the shifted face characters.
 */
 #ifndef CROWPANEL_KEY_LAYOUT_H
@@ -28,6 +28,7 @@ enum class CrowKeyKind : uint8_t {
   ExtRestore,
   ExtSetup,
   ExtProg,
+  ExtPad, // soft-pad JOY/USER profile picker (empty slot next to PROG)
   ExtVolUp,
   ExtVolDn,
   ExtJoy1,
@@ -145,7 +146,7 @@ inline constexpr CrowKeyDef CrowKeys[] = {
     {15, 5, 3, "RST", nullptr, CrowKeyKind::ExtReset, {0xff, 0xff, 0}},
 
     {0, 6, 3, "PROG", nullptr, CrowKeyKind::ExtProg, {0xff, 0xff, 0}},
-    {3, 6, 3, "", nullptr, CrowKeyKind::None, {0xff, 0xff, 0}},
+    {3, 6, 3, "PAD", nullptr, CrowKeyKind::ExtPad, {0xff, 0xff, 0}},
     {6, 6, 3, "J1", nullptr, CrowKeyKind::ExtJoy1, {0xff, 0xff, 0}},
     {9, 6, 3, "J2", nullptr, CrowKeyKind::ExtJoy2, {0xff, 0xff, 0}},
     {12, 6, 3, "JOFF", nullptr, CrowKeyKind::ExtJoyOff, {0xff, 0xff, 0}},
@@ -160,9 +161,10 @@ inline bool crowIsCtrlKind(CrowKeyKind k) {
          k == CrowKeyKind::ExtRun || k == CrowKeyKind::ExtAttach ||
          k == CrowKeyKind::ExtDetach || k == CrowKeyKind::ExtReset ||
          k == CrowKeyKind::ExtRestore || k == CrowKeyKind::ExtSetup ||
-         k == CrowKeyKind::ExtProg || k == CrowKeyKind::ExtVolUp ||
-         k == CrowKeyKind::ExtVolDn || k == CrowKeyKind::ExtJoy1 ||
-         k == CrowKeyKind::ExtJoy2 || k == CrowKeyKind::ExtJoyOff;
+         k == CrowKeyKind::ExtProg || k == CrowKeyKind::ExtPad ||
+         k == CrowKeyKind::ExtVolUp || k == CrowKeyKind::ExtVolDn ||
+         k == CrowKeyKind::ExtJoy1 || k == CrowKeyKind::ExtJoy2 ||
+         k == CrowKeyKind::ExtJoyOff;
 }
 
 inline bool crowExtCmdForKind(CrowKeyKind kind, ExtCmd &cmd, uint8_t &param0) {
@@ -195,6 +197,9 @@ inline bool crowExtCmdForKind(CrowKeyKind kind, ExtCmd &cmd, uint8_t &param0) {
     return false;
   case CrowKeyKind::ExtProg:
     // CrowPanelTouchKB toggles soft-pad program mode.
+    return false;
+  case CrowKeyKind::ExtPad:
+    // CrowPanelTouchKB opens soft-pad JOY/USER picker.
     return false;
   case CrowKeyKind::ExtVolUp:
     cmd = ExtCmd::INCVOLUME;
@@ -229,10 +234,22 @@ inline int crowKeyGridH() { return crowKeyCell() * CrowKeyRows; }
 inline int crowKeyOriginX() {
   return (CrowPanelHw::KB_PORTRAIT_W - crowKeyGridW()) / 2;
 }
-// Pin grid toward the top so controls sit clearly under the keyboard.
+
+// Portrait vertical bands (soft pad ↔ keyboard swapped; sizes unchanged).
+inline constexpr int crowPortraitPadTop() { return 8; }
+inline constexpr int crowPortraitPadBottom() { return 6; }
+inline constexpr int crowKbSoftGap() { return 6; }
+inline int crowSoftPadTop() { return crowPortraitPadTop(); }
+inline int crowSoftPadHeight() {
+  return (int)CrowPanelHw::KB_PORTRAIT_H - crowPortraitPadTop() -
+         crowPortraitPadBottom() - crowKeyGridH() - crowKbSoftGap();
+}
+inline int crowSoftPadBottom() {
+  return crowSoftPadTop() + crowSoftPadHeight();
+}
+// Keyboard sits under the soft pad (same grid size as before).
 inline int crowKeyOriginY() {
-  const int pad = 8;
-  return pad;
+  return crowSoftPadBottom() + crowKbSoftGap();
 }
 
 inline void crowKeyRectPortrait(const CrowKeyDef &k, int &px, int &py, int &pw,

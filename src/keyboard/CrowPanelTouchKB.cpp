@@ -32,6 +32,30 @@ void CrowPanelTouchKB::clearMatrix() {
   sentdc01.store(0xff, std::memory_order_release);
 }
 
+void CrowPanelTouchKB::clearJoy() {
+  joyvalue.store(0xff, std::memory_order_release);
+}
+
+int CrowPanelTouchKB::joyBitForSlot(int slot) {
+  // CIA joystick active-low: bit0 up, bit1 down, bit2 left, bit3 right, bit4 fire.
+  if (slot == CrowPanelSoftPad::kJoyFireSlot) {
+    return 4;
+  }
+  if (slot == 9) {
+    return 0; // UP
+  }
+  if (slot == 10) {
+    return 1; // DOWN
+  }
+  if (slot == 11) {
+    return 2; // LEFT
+  }
+  if (slot == 12) {
+    return 3; // RIGHT
+  }
+  return -1;
+}
+
 void CrowPanelTouchKB::applyModsOnly() {
   uint8_t mods = sticky | (shiftLock ? 1 : 0);
   shiftctrlcode.store(mods, std::memory_order_release);
@@ -53,6 +77,7 @@ void CrowPanelTouchKB::startPulse(const CodeTripleS &code) {
 void CrowPanelTouchKB::clearHold() {
   holdRepeat = false;
   holdIsPad = false;
+  holdIsJoy = false;
   holdId = -1;
   holdStartMs = 0;
   lastFireMs = 0;
@@ -61,14 +86,45 @@ void CrowPanelTouchKB::clearHold() {
 void CrowPanelTouchKB::beginHold(bool isPad, int id, const CodeTripleS &code) {
   holdRepeat = true;
   holdIsPad = isPad;
+  holdIsJoy = false;
   holdId = id;
   holdCode = code;
   holdStartMs = millis();
   lastFireMs = holdStartMs;
 }
 
+bool CrowPanelTouchKB::updateJoyFromPoints(const void *ptsVoid, int n) {
+  const auto *pts = static_cast<const TouchPoint *>(ptsVoid);
+  uint8_t joy = 0xff;
+  int lastHit = -1;
+  for (int i = 0; i < n; i++) {
+    CrowPanelSoftPad::Hit sh =
+        CrowPanelSoftPad::hitTest(pts[i].x, pts[i].y);
+    const int bit = joyBitForSlot((int)sh);
+    if (bit < 0) {
+      continue;
+    }
+    joy = (uint8_t)(joy & ~(1u << bit));
+    lastHit = (int)sh;
+  }
+  joyvalue.store(joy, std::memory_order_release);
+  if (lastHit >= 0) {
+    CrowPanelSoftPad::setHighlight(lastHit);
+    holdIsJoy = true;
+    holdIsPad = true;
+    holdRepeat = true;
+    holdId = lastHit;
+    return true;
+  }
+  return false;
+}
+
 void CrowPanelTouchKB::pollHoldRepeat(int touchX, int touchY) {
   if (!holdRepeat || holdId < 0) {
+    return;
+  }
+  // Joy diagonals are refreshed every scan via updateJoyFromPoints.
+  if (holdIsJoy) {
     return;
   }
   bool stillOn = false;
@@ -104,6 +160,7 @@ void CrowPanelTouchKB::pollHoldRepeat(int touchX, int touchY) {
 
 void CrowPanelTouchKB::init() {
   clearMatrix();
+  clearJoy();
   shiftctrlcode.store(0, std::memory_order_release);
   sticky = 0;
   shiftLock = false;
@@ -142,8 +199,22 @@ void CrowPanelTouchKB::scanKeyboard() {
     return;
   }
 
-  TouchPoint pts[1];
-  int n = tp->readPoints(pts, 1, 0);
+  // GT911: up to 5 contacts — need ≥2 for joystick diagonals.
+  static constexpr int kMaxPts = 5;
+  TouchPoint pts[kMaxPts];
+  int n = tp->readPoints(pts, kMaxPts, 0);
+  const bool joyProfile =
+      CrowPanelSoftPad::activeProfile() == CrowPanelSoftPad::kProfileJoy;
+
+  // Rebuild Joy1 bits every scan from all fingers on D-pad/FIRE.
+  bool joyActive = false;
+  if (joyProfile) {
+    if (n > 0) {
+      joyActive = updateJoyFromPoints(pts, n);
+    } else {
+      clearJoy();
+    }
+  }
 
   if (n <= 0) {
     if (CrowPanelSetup::active()) {
@@ -155,6 +226,9 @@ void CrowPanelTouchKB::scanKeyboard() {
         fingerDown = false;
         awaitingRelease = false;
         releaseQuiet = 0;
+        if (holdIsJoy) {
+          clearJoy();
+        }
         clearHold();
       }
     } else {
@@ -179,18 +253,54 @@ void CrowPanelTouchKB::scanKeyboard() {
     return;
   }
 
+  // Soft-pad JOY/USER picker (Setup-style window).
+  if (CrowPanelSoftPad::selectActive()) {
+    clearHold();
+    CrowPanelSoftPad::onSelectTouch(pts[0].x, pts[0].y);
+    fingerDown = true;
+    awaitingRelease = true;
+    return;
+  }
+
+  // Joy diagonals already updated above; keep contact state without blocking
+  // a second finger that lands on another D-pad button.
+  if (joyActive) {
+    fingerDown = true;
+    awaitingRelease = true;
+    CrowPanelHw::setHighlight(-1);
+    // Fall through only if some point is NOT a joy control (keys).
+    bool onlyJoy = true;
+    for (int i = 0; i < n; i++) {
+      CrowPanelSoftPad::Hit sh =
+          CrowPanelSoftPad::hitTest(pts[i].x, pts[i].y);
+      if (sh == CrowPanelSoftPad::Hit::None) {
+        onlyJoy = false;
+        break;
+      }
+      if (joyBitForSlot((int)sh) < 0) {
+        onlyJoy = false;
+        break;
+      }
+    }
+    if (onlyJoy) {
+      return;
+    }
+  }
+
   // Still contacting after we already fired this press — maybe auto-repeat.
-  if (awaitingRelease) {
+  if (awaitingRelease && !joyActive) {
     pollHoldRepeat(pts[0].x, pts[0].y);
     return;
   }
 
-  // Rising edge only (finger was up, now down)
-  if (fingerDown) {
+  // Rising edge only (finger was up, now down) — skip if joy already tracking.
+  if (fingerDown && !joyActive) {
     return;
   }
-  fingerDown = true;
-  awaitingRelease = true; // one event per contact
+  if (!fingerDown) {
+    fingerDown = true;
+    awaitingRelease = true; // one event per contact (non-joy)
+  }
 
   // Directory (LIST) window intercepts touches while open.
   if (CrowPanelDirBrowser::active()) {
@@ -234,34 +344,42 @@ void CrowPanelTouchKB::scanKeyboard() {
     return;
   }
 
-  // Soft pad (below keyboard) — check before matrix keys.
+  // Soft pad — check before matrix keys.
+  // Prefer the first non-joy hit so keys work while holding a direction.
   {
     using CrowPanelSoftPad::Hit;
-    Hit sh = CrowPanelSoftPad::hitTest(pts[0].x, pts[0].y);
+    Hit sh = Hit::None;
+    for (int i = 0; i < n; i++) {
+      Hit h = CrowPanelSoftPad::hitTest(pts[i].x, pts[i].y);
+      if (h == Hit::None) {
+        continue;
+      }
+      if (joyProfile && joyBitForSlot((int)h) >= 0) {
+        continue; // joy already handled continuously
+      }
+      sh = h;
+      break;
+    }
     if (sh != Hit::None) {
       CrowPanelSoftPad::setHighlight((int)sh);
       CrowPanelHw::setHighlight(-1);
-      if (CrowPanelSoftPad::isProfileHit((int)sh)) {
+      const int sid = (int)sh;
+      if (CrowPanelSoftPad::programMode()) {
         clearHold();
-        CrowPanelSoftPad::setProfile((int)sh - CrowPanelSoftPad::kProfileHitBase);
-        return;
-      }
-      {
-        const int sid = (int)sh;
-        if (CrowPanelSoftPad::programMode()) {
-          clearHold();
-          CrowPanelSoftPad::onSelectSlot(sid);
+        CrowPanelSoftPad::onSelectSlot(sid);
+      } else {
+        const auto &s = CrowPanelSoftPad::slot(sid);
+        if (s.assigned()) {
+          startPulse(s.code());
+          beginHold(true, sid, s.code());
         } else {
-          const auto &s = CrowPanelSoftPad::slot(sid);
-          if (s.assigned()) {
-            startPulse(s.code());
-            beginHold(true, sid, s.code());
-          } else {
-            clearHold();
-          }
+          clearHold();
         }
       }
       return;
+    }
+    if (joyActive) {
+      return; // only joy contacts this frame
     }
   }
 
@@ -287,6 +405,7 @@ void CrowPanelTouchKB::scanKeyboard() {
   if (k.kind == CrowKeyKind::ExtList) {
     CrowPanelFileBrowser::close();
     CrowPanelSetup::close();
+    CrowPanelSoftPad::closeSelect();
     CrowPanelDirBrowser::open();
     ExtCmdQueue::ExternalCmd extcmd{};
     extcmd.cmd = ExtCmd::LISTD64DIR;
@@ -299,6 +418,7 @@ void CrowPanelTouchKB::scanKeyboard() {
   if (k.kind == CrowKeyKind::ExtAttach) {
     CrowPanelDirBrowser::close();
     CrowPanelSetup::close();
+    CrowPanelSoftPad::closeSelect();
     CrowPanelFileBrowser::open();
     CrowPanelHw::setHighlight(-1);
     return;
@@ -317,13 +437,30 @@ void CrowPanelTouchKB::scanKeyboard() {
   if (k.kind == CrowKeyKind::ExtSetup) {
     CrowPanelFileBrowser::close();
     CrowPanelDirBrowser::close();
+    CrowPanelSoftPad::closeSelect();
     CrowPanelSetup::open();
     CrowPanelHw::setHighlight(-1);
     CrowPanelSoftPad::setHighlight(-1);
     return;
   }
 
+  if (k.kind == CrowKeyKind::ExtPad) {
+    CrowPanelFileBrowser::close();
+    CrowPanelDirBrowser::close();
+    CrowPanelSetup::close();
+    clearHold();
+    if (CrowPanelSoftPad::selectActive()) {
+      CrowPanelSoftPad::closeSelect();
+    } else {
+      CrowPanelSoftPad::openSelect();
+    }
+    CrowPanelHw::setHighlight(-1);
+    CrowPanelSoftPad::setHighlight(-1);
+    return;
+  }
+
   if (k.kind == CrowKeyKind::ExtProg) {
+    CrowPanelSoftPad::closeSelect();
     clearHold();
     CrowPanelSoftPad::onProg();
     CrowPanelHw::setHighlight(-1);
@@ -379,6 +516,9 @@ uint8_t CrowPanelTouchKB::getKBCodeDC00() {
 }
 uint8_t CrowPanelTouchKB::getShiftctrlcode() {
   return shiftctrlcode.load(std::memory_order_acquire);
+}
+uint8_t CrowPanelTouchKB::getKBJoyValue() {
+  return joyvalue.load(std::memory_order_acquire);
 }
 
 #endif

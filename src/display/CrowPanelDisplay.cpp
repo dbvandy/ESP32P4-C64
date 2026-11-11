@@ -590,6 +590,90 @@ void CrowPanelDisplay::drawSetupOverlay() {
   }
 }
 
+void CrowPanelDisplay::drawPadSelectOverlay() {
+  using namespace CrowPanelSoftPad;
+  uint16_t *fb = CrowPanelHw::framebuffer();
+  if (!fb) {
+    return;
+  }
+  const uint16_t ink = 0x1082;
+  const uint16_t card = 0xF79E;
+  const uint16_t cardEdge = 0xC618;
+  const uint16_t faceOn = 0xB4E6;
+  const uint16_t faceIdle = 0xC618;
+  const uint16_t closeBg = 0xCE79;
+
+  auto p2fb = [](int px, int py, int pw, int ph, int &x, int &y, int &w,
+                 int &h) {
+    portraitToFb(px, py, x, y);
+    int x1, y1;
+    portraitToFb(px + pw - 1, py + ph - 1, x1, y1);
+    int bx = x < x1 ? x : x1;
+    int by = y < y1 ? y : y1;
+    w = (x > x1 ? x : x1) - bx + 1;
+    h = (y > y1 ? y : y1) - by + 1;
+    x = bx;
+    y = by;
+  };
+
+  auto fillRoundRectFb = [&](int bx, int by, int bw, int bh, int rr,
+                             uint16_t fill, uint16_t edge) {
+    if (rr * 2 > bw) {
+      rr = bw / 2;
+    }
+    if (rr * 2 > bh) {
+      rr = bh / 2;
+    }
+    if (rr < 2) {
+      rr = 2;
+    }
+    fillRect(fb, bx + rr, by, bw - 2 * rr, bh, fill);
+    fillRect(fb, bx, by + rr, bw, bh - 2 * rr, fill);
+    fillCircle(fb, bx + rr, by + rr, rr, fill);
+    fillCircle(fb, bx + bw - 1 - rr, by + rr, rr, fill);
+    fillCircle(fb, bx + rr, by + bh - 1 - rr, rr, fill);
+    fillCircle(fb, bx + bw - 1 - rr, by + bh - 1 - rr, rr, fill);
+    fillRect(fb, bx + rr, by, bw - 2 * rr, 1, edge);
+    fillRect(fb, bx + rr, by + bh - 1, bw - 2 * rr, 1, edge);
+    fillRect(fb, bx, by + rr, 1, bh - 2 * rr, edge);
+    fillRect(fb, bx + bw - 1, by + rr, 1, bh - 2 * rr, edge);
+  };
+
+  int px, py, pw, ph;
+  selectPanelPortrait(px, py, pw, ph);
+  int x, y, w, h;
+  p2fb(px, py, pw, ph, x, y, w, h);
+  fillRoundRectFb(x + 3, y + 4, w, h, 18, 0x4208, 0x4208);
+  fillRoundRectFb(x, y, w, h, 18, card, cardEdge);
+  drawKeyGlyph(x + 22, y + h / 2, "Pad", ink, card, 2);
+
+  const int active = activeProfile();
+  for (int i = 0; i < kProfileCount; i++) {
+    int cx, cy, cw, ch;
+    selectChoicePortrait(i, cx, cy, cw, ch);
+    if (cw <= 0 || ch <= 0) {
+      continue;
+    }
+    int bx, by, bw, bh;
+    p2fb(cx, cy, cw, ch, bx, by, bw, bh);
+    const bool on = (i == active);
+    const uint16_t face = on ? faceOn : faceIdle;
+    fillRoundRectFb(bx, by, bw, bh, 12, face, cardEdge);
+    drawKeyGlyph(bx + bw / 2, by + bh / 2, profileLabel(i), ink, face, 2);
+  }
+
+  {
+    int qx, qy, qw, qh, cx, cy, cw, ch;
+    selectClosePortrait(qx, qy, qw, qh);
+    p2fb(qx, qy, qw, qh, cx, cy, cw, ch);
+    int ccx = cx + cw / 2;
+    int ccy = cy + ch / 2;
+    int cr = (cw < ch ? cw : ch) / 2;
+    fillCircle(fb, ccx, ccy, cr, closeBg);
+    drawKeyGlyph(ccx, ccy, "X", ink, closeBg, 1);
+  }
+}
+
 void CrowPanelDisplay::drawKeyboardOverlay() {
   uint16_t *fb = CrowPanelHw::framebuffer();
   if (!fb) {
@@ -630,6 +714,9 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     uint16_t col = face;
     if (k.kind == CrowKeyKind::ExtProg && CrowPanelSoftPad::programMode()) {
       col = faceOn;
+    } else if (k.kind == CrowKeyKind::ExtPad &&
+               CrowPanelSoftPad::selectActive()) {
+      col = faceOn;
     } else if (crowIsCtrlKind(k.kind)) {
       col = faceCtrl;
     } else if (k.kind == CrowKeyKind::ModShift ||
@@ -648,6 +735,8 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
     const char *lab = crowKeyFaceLabel(k, shifted);
     if (k.kind == CrowKeyKind::ExtProg && CrowPanelSoftPad::programMode()) {
       lab = "SET";
+    } else if (k.kind == CrowKeyKind::ExtPad) {
+      lab = CrowPanelSoftPad::profileLabel(CrowPanelSoftPad::activeProfile());
     }
     if (lab && lab[0]) {
       drawKeyGlyph(x + w / 2, y + h / 2, lab, ink, col);
@@ -782,25 +871,19 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
       drawArcadeBtn(i, isArrowSlot(i));
     }
 
-    // Commodore 64 logo bitmap above the D-pad (90° CCW).
+    // Commodore 64 logo bitmap above the D-pad (scaled, 90° CCW via portraitToFb).
     {
       int lcx, lcy, lw, lh;
       logoPortrait(lcx, lcy, lw, lh);
       if (lw > 0 && lh > 0 && C64_LOGO_W > 0 && C64_LOGO_H > 0) {
         const int ppx = lcx - lw / 2;
         const int ppy = lcy - lh / 2;
-        int x0, y0, x1, y1;
-        portraitToFb(ppx, ppy, x0, y0);
-        portraitToFb(ppx + lw - 1, ppy + lh - 1, x1, y1);
-        const int dx = x0 < x1 ? x0 : x1;
-        const int dy = y0 < y1 ? y0 : y1;
-        // 90° CCW: src(sx,sy) → dest(sy, W-1-sx); out size H×W.
-        for (int sy = 0; sy < C64_LOGO_H; sy++) {
-          for (int sx = 0; sx < C64_LOGO_W; sx++) {
-            const int nx = sy;
-            const int ny = C64_LOGO_W - 1 - sx;
-            const int fx = dx + nx;
-            const int fy = dy + ny;
+        for (int py = 0; py < lh; py++) {
+          const int sy = py * C64_LOGO_H / lh;
+          for (int px = 0; px < lw; px++) {
+            const int sx = px * C64_LOGO_W / lw;
+            int fx, fy;
+            portraitToFb(ppx + px, ppy + py, fx, fy);
             if (fx < 0 || fy < 0 || fx >= (int)CrowPanelHw::PANEL_W ||
                 fy >= (int)CrowPanelHw::PANEL_H) {
               continue;
@@ -812,34 +895,10 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
       }
     }
 
-    // Profile bank: JOY / USER1 / USER2 / USER3 along the bottom.
-    {
-      auto p2fbRect = [&](int px, int py, int pw, int ph, int &x, int &y,
-                          int &w, int &h) {
-        int x0, y0, x1, y1;
-        portraitToFb(px, py, x0, y0);
-        portraitToFb(px + pw - 1, py + ph - 1, x1, y1);
-        x = x0 < x1 ? x0 : x1;
-        y = y0 < y1 ? y0 : y1;
-        w = (x0 > x1 ? x0 : x1) - x + 1;
-        h = (y0 > y1 ? y0 : y1) - y + 1;
-      };
-      const int active = activeProfile();
-      for (int i = 0; i < kProfileCount; i++) {
-        int px, py, pw, ph, x, y, w, h;
-        profilePortrait(i, px, py, pw, ph);
-        if (pw <= 0 || ph <= 0) {
-          continue;
-        }
-        p2fbRect(px, py, pw, ph, x, y, w, h);
-        const bool on = (i == active);
-        const bool pressed = (shi == kProfileHitBase + i);
-        const uint16_t faceP = on ? faceOn : 0xC618;
-        const uint16_t edgeP = pressed ? 0xFFFF : beigeEdge;
-        fillRoundRectFb(x, y, w, h, 8, faceP, edgeP);
-        drawKeyGlyph(x + w / 2, y + h / 2, profileLabel(i), ink, faceP, 1);
-      }
-    }
+  }
+
+  if (CrowPanelSoftPad::selectActive()) {
+    drawPadSelectOverlay();
   }
 
   if (CrowPanelSetup::active()) {

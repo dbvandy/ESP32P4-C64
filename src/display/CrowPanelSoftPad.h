@@ -3,7 +3,7 @@
   - Left: 9 big blue programmable buttons (3×3)
   - Right: 4 big red programmable buttons (D-pad)
   - C64 rainbow logo above the D-pad
-  - Bottom bank: JOY / USER1 / USER2 / USER3
+  - JOY / USER1..3 picked from a Setup-style window (PAD key next to PROG)
   - PROG lives on the controls strip under D64
  Mappings persist per-profile in NVS and reload on boot.
 */
@@ -86,6 +86,12 @@ int activeProfile(); // 0..3
 void setProfile(int profile);
 const char *profileLabel(int profile);
 
+// Setup-style JOY/USER picker (opened from PAD key next to PROG).
+bool selectActive();
+void openSelect();
+void closeSelect();
+void onSelectTouch(int touchX, int touchY);
+
 int highlight();           // lit button id, or -1
 void setHighlight(int id); // starts a ~0.25s under-light
 void tick();               // expire timed glow
@@ -94,7 +100,9 @@ void tick();               // expire timed glow
 void bodyPortrait(int &x, int &y, int &w, int &h);
 void buttonPortrait(int i, int &cx, int &cy, int &r);
 void logoPortrait(int &cx, int &cy, int &w, int &h);
-void profilePortrait(int profile, int &x, int &y, int &w, int &h);
+void selectPanelPortrait(int &x, int &y, int &w, int &h);
+void selectChoicePortrait(int profile, int &x, int &y, int &w, int &h);
+void selectClosePortrait(int &x, int &y, int &w, int &h);
 
 // Portrait → landscape FB point (for centers).
 void portraitToFb(int px, int py, int &fx, int &fy);

@@ -20,6 +20,7 @@ private:
   void drawFileBrowserOverlay();
   void drawDirBrowserOverlay();
   void drawSetupOverlay();
+  void drawPadSelectOverlay();
   void drawKeyGlyph(int x, int y, const char *label, uint16_t fg, uint16_t bg,
                     int scale = 1);
   void drawPortraitButton(int px, int py, int pw, int ph, const char *label,

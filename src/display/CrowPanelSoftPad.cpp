@@ -8,6 +8,8 @@
 #include "C64LogoBitmap.h"
 #include "CrowPanelHw.h"
 #include "CrowPanelKeyLayout.h"
+#include "../ExtCmd.h"
+#include "../ExtCmdQueue.h"
 #include "../keyboard/C64Keycodes.h"
 #include "../platform/PlatformManager.h"
 #include <Arduino.h>
@@ -28,7 +30,7 @@ static int s_selected = -1;
 static int s_highlight = -1;
 static uint32_t s_glowUntilMs = 0;
 static constexpr uint32_t kGlowMs = 250;
-static constexpr int kProfileBarH = 40;
+static bool s_selectActive = false;
 
 struct Circ {
   int cx, cy, r;
@@ -40,7 +42,9 @@ struct Rect {
 static Circ s_btn[kSlotCount];
 static Rect s_body;
 static Rect s_logo{};
-static Rect s_profileBtn[kProfileCount]{};
+static Rect s_selectPanel{};
+static Rect s_selectChoice[kProfileCount]{};
+static Rect s_selectClose{};
 
 #pragma pack(push, 1)
 struct MapBlob {
@@ -144,17 +148,51 @@ static void loadNvs() {
   syncActiveFromProfile();
 }
 
+static void pushJoyPortMode(bool joy1) {
+  ExtCmdQueue::ExternalCmd extcmd{};
+  extcmd.cmd = joy1 ? ExtCmd::KBJOYSTICKMODE1 : ExtCmd::KBJOYSTICKMODEOFF;
+  memset(extcmd.param, 0, sizeof(extcmd.param));
+  ExtCmdQueue::getInstance().push(extcmd);
+}
+
+static void layoutSelect() {
+  const int pw = CrowPanelHw::KB_PORTRAIT_W;
+  const int ph = CrowPanelHw::KB_PORTRAIT_H;
+  const int cardW = 300;
+  const int cardH = 260;
+  s_selectPanel = {(pw - cardW) / 2, (ph - cardH) / 2, cardW, cardH};
+
+  const int pad = 16;
+  const int titleBand = 40;
+  const int cr = 14;
+  s_selectClose = {s_selectPanel.x + s_selectPanel.w - 34, s_selectPanel.y + 8,
+                   cr * 2, cr * 2};
+
+  const int gridX = s_selectPanel.x + pad;
+  const int gridY = s_selectPanel.y + titleBand;
+  const int gridW = s_selectPanel.w - 2 * pad;
+  const int gridH = s_selectPanel.h - titleBand - pad;
+  const int gap = 12;
+  const int cellW = (gridW - gap) / 2;
+  const int cellH = (gridH - gap) / 2;
+  for (int i = 0; i < kProfileCount; i++) {
+    const int col = i % 2;
+    const int row = i / 2;
+    s_selectChoice[i] = {gridX + col * (cellW + gap),
+                         gridY + row * (cellH + gap), cellW, cellH};
+  }
+}
+
 static void layout() {
-  const int gridBottom = crowKeyOriginY() + crowKeyGridH();
-  const int top = gridBottom + 6;
-  const int bottom = (int)CrowPanelHw::KB_PORTRAIT_H - 6;
+  // Soft pad on top of portrait band (keyboard sits below).
+  const int top = crowSoftPadTop();
+  const int bottom = crowSoftPadBottom();
   const int left = 6;
   const int right = (int)CrowPanelHw::KB_PORTRAIT_W - 6;
   const int areaH = bottom - top;
   const int areaW = right - left;
   if (areaH < 80 || areaW < 120) {
     memset(s_btn, 0, sizeof(s_btn));
-    memset(s_profileBtn, 0, sizeof(s_profileBtn));
     s_body = {0, 0, 0, 0};
     s_logo = {0, 0, 0, 0};
     return;
@@ -163,39 +201,42 @@ static void layout() {
   s_body = {left, top, areaW, areaH};
 
   const int padIn = 8;
-  const int profileTop = bottom - kProfileBarH;
-  const int playBottom = profileTop - 4;
-  const int playH = playBottom - top;
+  // Full soft-pad height is play area (profile bank moved to PAD window).
+  const int playH = areaH;
   const int halfW = (areaW - 3 * padIn) / 2;
   const int usableH = playH - 2 * padIn;
   const bool joy = (s_activeProfile == kProfileJoy);
 
-  int r = usableH / 7;
-  if (r > halfW / 7) {
-    r = halfW / 7;
+  // Bigger D-pad: use more of the freed vertical space.
+  int r = usableH / 6;
+  if (r > halfW / 6) {
+    r = halfW / 6;
   }
-  if (r < 16) {
-    r = 16;
+  if (r < 18) {
+    r = 18;
   }
-  if (r > 40) {
-    r = 40;
+  if (r > 56) {
+    r = 56;
   }
-  // JOY mode: fewer visible blue buttons — bump those a bit.
-  // D-pad stays at normal size.
+  // JOY blue buttons keep current size; USER blues −10%.
   int rJoy = (r * 5) / 4 + 2;
-  if (rJoy > 48) {
-    rJoy = 48;
+  if (rJoy > 60) {
+    rJoy = 60;
   }
-  const int rBlue = joy ? rJoy : r;
-  const int gap = r / 5 + 4;
+  const int rUser = (r * 9) / 10;
+  const int rBlue = joy ? rJoy : rUser;
+  // D-pad (all profiles) −10%.
+  const int rPad = (r * 9) / 10;
+  const int gap = rPad / 5 + 4;
   const int gapJoy = rJoy / 5 + 4;
+  const int gapUser = rUser / 5 + 4;
 
-  // Left blue cluster: USER profiles keep original position; JOY shifts in.
-  const int blueShift = joy ? (halfW / 5 + 10) : 0;
+  // Left blue cluster: USER nudged right onto the panel; JOY shifts in more.
+  const int blueShift = joy ? (halfW / 5 + 10) : 15;
   const int lx0 = left + padIn + halfW / 2 + blueShift;
   const int ly0 = top + playH / 2;
-  const int ldx = 2 * rBlue + (joy ? gapJoy : gap);
-  const int ldy = 2 * rBlue + (joy ? gapJoy : gap);
+  const int ldx = 2 * rBlue + (joy ? gapJoy : gapUser);
+  const int ldy = 2 * rBlue + (joy ? gapJoy : gapUser);
   for (int row = 0; row < 3; row++) {
     for (int col = 0; col < 3; col++) {
       int i = row * 3 + col;
@@ -203,38 +244,31 @@ static void layout() {
     }
   }
 
-  // Logo near top, centered over the D-pad column.
-  const int logoW = C64_LOGO_W;
-  const int logoH = C64_LOGO_H;
+  // Logo near top, centered over the D-pad column (+10px down, +10% size).
+  const int logoW = (C64_LOGO_W * 11) / 10;
+  const int logoH = (C64_LOGO_H * 11) / 10;
   const int rx0 = left + padIn + halfW + padIn + halfW / 2;
   const int logoCx = rx0;
-  const int logoPy = top + 10;
+  const int logoPy = top + 18;
   s_logo = {logoCx - logoW / 2, logoPy, logoW, logoH};
 
-  // Right red D-pad — normal size, centered between logo and profile bank.
+  // Right red D-pad — centered under logo (10% smaller than base r).
   const int logoBottom = logoPy + logoH;
-  const int step = (7 * r) / 5 + gap;
-  int ry0 = (logoBottom + profileTop) / 2;
-  // Keep the whole cross inside the play band.
-  if (ry0 - step - r < logoBottom + 4) {
-    ry0 = logoBottom + 4 + step + r;
+  const int playBottom = bottom;
+  const int step = (7 * rPad) / 5 + gap;
+  int ry0 = (logoBottom + playBottom) / 2;
+  if (ry0 - step - rPad < logoBottom + 4) {
+    ry0 = logoBottom + 4 + step + rPad;
   }
-  if (ry0 + step + r > profileTop - 4) {
-    ry0 = profileTop - 4 - step - r;
+  if (ry0 + step + rPad > playBottom - 4) {
+    ry0 = playBottom - 4 - step - rPad;
   }
-  s_btn[9] = {rx0, ry0 - step, r};
-  s_btn[10] = {rx0, ry0 + step, r};
-  s_btn[11] = {rx0 - step, ry0, r};
-  s_btn[12] = {rx0 + step, ry0, r};
+  s_btn[9] = {rx0, ry0 - step, rPad};
+  s_btn[10] = {rx0, ry0 + step, rPad};
+  s_btn[11] = {rx0 - step, ry0, rPad};
+  s_btn[12] = {rx0 + step, ry0, rPad};
 
-  // Bottom bank: JOY / USER1 / USER2 / USER3 — equal size.
-  const int gapP = 6;
-  const int btnW = (areaW - gapP * (kProfileCount + 1)) / kProfileCount;
-  const int btnH = kProfileBarH - 8;
-  const int by = profileTop + 4;
-  for (int i = 0; i < kProfileCount; i++) {
-    s_profileBtn[i] = {left + gapP + i * (btnW + gapP), by, btnW, btnH};
-  }
+  layoutSelect();
 }
 
 static bool inCircle(const Circ &c, int px, int py) {
@@ -263,6 +297,10 @@ void init() {
   s_programMode = false;
   s_selected = -1;
   s_highlight = -1;
+  // Default / restored JOY profile → CIA port 1 virtual stick.
+  if (s_activeProfile == kProfileJoy) {
+    pushJoyPortMode(true);
+  }
 }
 
 void setHighlight(int id) {
@@ -332,22 +370,66 @@ const char *profileLabel(int profile) {
 }
 
 void setProfile(int profile) {
-  if (profile < 0 || profile >= kProfileCount || profile == s_activeProfile) {
-    if (profile == s_activeProfile) {
-      CrowPanelHw::requestKeyboardRedraw();
-    }
+  if (profile < 0 || profile >= kProfileCount) {
     return;
   }
+  if (profile == s_activeProfile) {
+    s_selectActive = false;
+    CrowPanelHw::requestKeyboardRedraw();
+    return;
+  }
+  const int prev = s_activeProfile;
   syncProfileFromActive();
   s_activeProfile = profile;
   syncActiveFromProfile();
   layout(); // JOY uses larger buttons / recentered D-pad
   s_programMode = false;
   s_selected = -1;
+  s_selectActive = false;
   saveNvs();
   CrowPanelHw::requestKeyboardRedraw();
+  // JOY profile drives CIA Joy1; leaving it releases the stick port.
+  if (profile == kProfileJoy && prev != kProfileJoy) {
+    pushJoyPortMode(true);
+  } else if (prev == kProfileJoy && profile != kProfileJoy) {
+    pushJoyPortMode(false);
+  }
   PlatformManager::getInstance().log(LOG_INFO, TAG, "profile %s",
                                      profileLabel(profile));
+}
+
+bool selectActive() { return s_selectActive; }
+
+void openSelect() {
+  layoutSelect();
+  s_selectActive = true;
+  CrowPanelHw::requestKeyboardRedraw();
+}
+
+void closeSelect() {
+  if (!s_selectActive) {
+    return;
+  }
+  s_selectActive = false;
+  CrowPanelHw::requestKeyboardRedraw();
+}
+
+void onSelectTouch(int touchX, int touchY) {
+  if (!s_selectActive || touchX < (int)CrowPanelHw::KB_X0) {
+    return;
+  }
+  int px, py;
+  portraitFromTouch(touchX, touchY, px, py);
+  if (inRect(s_selectClose, px, py)) {
+    closeSelect();
+    return;
+  }
+  for (int i = 0; i < kProfileCount; i++) {
+    if (inRect(s_selectChoice[i], px, py)) {
+      setProfile(i);
+      return;
+    }
+  }
 }
 
 void onProg() {
@@ -410,11 +492,6 @@ Hit hitTest(int touchX, int touchY) {
       py >= (int)CrowPanelHw::KB_PORTRAIT_H) {
     return Hit::None;
   }
-  for (int i = 0; i < kProfileCount; i++) {
-    if (inRect(s_profileBtn[i], px, py)) {
-      return static_cast<Hit>(kProfileHitBase + i);
-    }
-  }
   for (int i = 0; i < kSlotCount; i++) {
     if (!slotVisible(i)) {
       continue;
@@ -451,15 +528,29 @@ void logoPortrait(int &cx, int &cy, int &w, int &h) {
   h = s_logo.h;
 }
 
-void profilePortrait(int profile, int &x, int &y, int &w, int &h) {
+void selectPanelPortrait(int &x, int &y, int &w, int &h) {
+  x = s_selectPanel.x;
+  y = s_selectPanel.y;
+  w = s_selectPanel.w;
+  h = s_selectPanel.h;
+}
+
+void selectChoicePortrait(int profile, int &x, int &y, int &w, int &h) {
   if (profile < 0 || profile >= kProfileCount) {
     x = y = w = h = 0;
     return;
   }
-  x = s_profileBtn[profile].x;
-  y = s_profileBtn[profile].y;
-  w = s_profileBtn[profile].w;
-  h = s_profileBtn[profile].h;
+  x = s_selectChoice[profile].x;
+  y = s_selectChoice[profile].y;
+  w = s_selectChoice[profile].w;
+  h = s_selectChoice[profile].h;
+}
+
+void selectClosePortrait(int &x, int &y, int &w, int &h) {
+  x = s_selectClose.x;
+  y = s_selectClose.y;
+  w = s_selectClose.w;
+  h = s_selectClose.h;
 }
 
 void portraitToFb(int px, int py, int &fx, int &fy) {
