@@ -361,8 +361,17 @@ void CrowPanelTouchKB::scanKeyboard() {
       break;
     }
     if (sh != Hit::None) {
-      CrowPanelSoftPad::setHighlight((int)sh);
       CrowPanelHw::setHighlight(-1);
+      if (sh == Hit::Logo) {
+        clearHold();
+        CrowPanelSoftPad::setHighlight(-1);
+        ExtCmdQueue::ExternalCmd grab{};
+        grab.cmd = ExtCmd::SCREENGRAB;
+        memset(grab.param, 0, sizeof(grab.param));
+        ExtCmdQueue::getInstance().push(grab);
+        return;
+      }
+      CrowPanelSoftPad::setHighlight((int)sh);
       const int sid = (int)sh;
       if (CrowPanelSoftPad::programMode()) {
         clearHold();

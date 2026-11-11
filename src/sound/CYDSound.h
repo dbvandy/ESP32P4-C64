@@ -26,7 +26,7 @@
 
 class CYDSound : public SoundDriver {
 private:
-  static constexpr size_t FRAMESIZE = AUDIO_SAMPLE_RATE / 50;
+  static constexpr size_t FRAMESIZE = C64_SAMPLES_PER_FRAME;
 
   dac_continuous_handle_t dac_handle = nullptr;
   uint8_t sampleBuf[FRAMESIZE];

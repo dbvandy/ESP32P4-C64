@@ -129,6 +129,15 @@
 // global defines
 #define AUDIO_SAMPLE_RATE 44100
 
+// Video timing — PAL VIC-II (6569). NTSC felt too fast on this non-cycle-exact core.
+#define C64_VIDEO_NTSC 0
+#define C64_LINES_PER_FRAME 312
+#define C64_LAST_RASTERLINE 311
+#define C64_CYCLES_PER_LINE 63
+#define C64_FRAME_RATE_HZ 50
+#define C64_SID_CLOCK_HZ 985248.0f
+#define C64_SAMPLES_PER_FRAME (AUDIO_SAMPLE_RATE / C64_FRAME_RATE_HZ)
+
 // Power-off behavior for ESP32S3 boards with a real power latch (Waveshare,
 // T_HMI). T_DISPLAY_S3 always uses the new behavior (no hard power-off
 // available).

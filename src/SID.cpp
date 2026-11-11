@@ -50,7 +50,8 @@ void SIDVoice::init() {
 bool SIDVoice::isActive() { return adsrState != IDLE; }
 
 void SIDVoice::updVarFrequency(uint16_t freq) {
-  phaseIncrement = (float)(freq) * 985248.0f / 16777216.0f / AUDIO_SAMPLE_RATE;
+  phaseIncrement =
+      (float)(freq) * C64_SID_CLOCK_HZ / 16777216.0f / AUDIO_SAMPLE_RATE;
 }
 
 void SIDVoice::updVarPulseWidth(uint16_t pw) {
@@ -270,16 +271,36 @@ int16_t SID::generateSample() {
     }
     sample += env * sample0;
   }
-  if (cnt == 0) {
-    return 0;
+  int16_t out = 0;
+  if (cnt != 0) {
+    sample /= cnt;
+    out = static_cast<int16_t>(sample * c64Volume * emuVolume);
   }
-  sample /= cnt;
-  return static_cast<int16_t>(sample * c64Volume * emuVolume);
+  // Decaying shutter click (screen grab).
+  if (clickSamplesLeft > 0) {
+    const uint16_t total = 900;
+    const int32_t amp =
+        (int32_t)(14000 * clickSamplesLeft) / (int32_t)total;
+    const int16_t tick = (clickSamplesLeft & 2) ? (int16_t)amp : (int16_t)-amp;
+    int32_t mixed = (int32_t)out + tick;
+    if (mixed > 32767) {
+      mixed = 32767;
+    }
+    if (mixed < -32768) {
+      mixed = -32768;
+    }
+    out = (int16_t)mixed;
+    clickSamplesLeft--;
+  }
+  return out;
 }
+
+void SID::triggerClick() { clickSamplesLeft = 900; }
 
 void SID::fillBuffer(uint16_t rasterline) {
   voice2silent = sidreg[0x18] & 0x80;
-  uint16_t targetSampleIdx = rasterline * NUMSAMPLESPERFRAME / 312 + 1;
+  uint16_t targetSampleIdx =
+      rasterline * NUMSAMPLESPERFRAME / C64_LINES_PER_FRAME + 1;
   uint16_t numOfSamples = 2;
   if (actSampleIdx < targetSampleIdx) {
     numOfSamples++;

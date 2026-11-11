@@ -64,11 +64,12 @@ public:
 class SID {
 private:
   static constexpr uint8_t VOLUME_MULTIPLICATOR = 120;
-  static const uint16_t NUMSAMPLESPERFRAME = AUDIO_SAMPLE_RATE / 50;
+  static const uint16_t NUMSAMPLESPERFRAME = C64_SAMPLES_PER_FRAME;
   int16_t samples[NUMSAMPLESPERFRAME];
   SoundDriver *sound;
   uint16_t actSampleIdx;
   bool voice2silent;
+  uint16_t clickSamplesLeft = 0; // shutter-click overlay
 
   int16_t generateSample();
 
@@ -86,6 +87,7 @@ public:
   void stopSound(uint8_t voice);
   void fillBuffer(uint16_t rasterline);
   void playAudio();
+  void triggerClick(); // short camera-shutter click (screen grab)
   uint8_t getEmuVolume();
   void setEmuVolume(uint8_t volume);
   void resetVoices();

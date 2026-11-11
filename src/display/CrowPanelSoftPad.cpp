@@ -500,6 +500,10 @@ Hit hitTest(int touchX, int touchY) {
       return static_cast<Hit>(i);
     }
   }
+  // Commodore logo → screen grab (after buttons so D-pad wins overlaps).
+  if (inRect(s_logo, px, py)) {
+    return Hit::Logo;
+  }
   return Hit::None;
 }
 

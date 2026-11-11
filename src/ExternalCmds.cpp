@@ -24,6 +24,11 @@
 #if defined(BOARD_CROWPANEL_P4)
 #include "display/CrowPanelDirBrowser.h"
 #include "display/CrowPanelHw.h"
+#include "fs/SDMMCFile.h"
+#include <Arduino.h>
+#include <cerrno>
+#include <cstdio>
+#include <sys/stat.h>
 #endif
 #include <algorithm>
 #include <cstring>
@@ -727,6 +732,74 @@ uint8_t ExternalCmds::executeNextExternalCmd() {
   }
   case ExtCmd::WAIT: {
     // WAIT is handled before case statement
+    return 0;
+  }
+  case ExtCmd::SCREENGRAB: {
+#if defined(BOARD_CROWPANEL_P4) && defined(USE_SDCARD) &&                      \
+    defined(USE_CROWPANEL_DISPLAY)
+    cpu->sid.triggerClick();
+    uint16_t *fb = CrowPanelHw::framebuffer();
+    if (!fb) {
+      PlatformManager::getInstance().log(LOG_ERROR, TAG, "grab: no framebuffer");
+      return 0;
+    }
+    if (mkdir("/sdcard/grabs", 0755) != 0 && errno != EEXIST) {
+      PlatformManager::getInstance().log(LOG_ERROR, TAG,
+                                         "grabs mkdir failed errno=%d", errno);
+      return 0;
+    }
+    char path[48];
+    snprintf(path, sizeof(path), "grabs/grab_%08lu.bmp",
+             (unsigned long)millis());
+    SDMMCFile out;
+    out.init();
+    if (!out.open(path, "wb")) {
+      PlatformManager::getInstance().log(LOG_ERROR, TAG, "grab open failed %s",
+                                         path);
+      return 0;
+    }
+    const uint32_t w = CrowPanelHw::PANEL_W; // 1024
+    const uint32_t h = CrowPanelHw::PANEL_H; // 600
+    const uint32_t rowBytes = w * 3;         // 3072, 4-byte aligned
+    const uint32_t fileSize = 54 + rowBytes * h;
+    uint8_t hdr[54] = {};
+    hdr[0] = 'B';
+    hdr[1] = 'M';
+    hdr[2] = (uint8_t)(fileSize);
+    hdr[3] = (uint8_t)(fileSize >> 8);
+    hdr[4] = (uint8_t)(fileSize >> 16);
+    hdr[5] = (uint8_t)(fileSize >> 24);
+    hdr[10] = 54;
+    hdr[14] = 40;
+    hdr[18] = (uint8_t)(w);
+    hdr[19] = (uint8_t)(w >> 8);
+    hdr[22] = (uint8_t)(h);
+    hdr[23] = (uint8_t)(h >> 8);
+    hdr[26] = 1;
+    hdr[28] = 24;
+    out.write(hdr, 54);
+    // Full panel RGB565 → 24-bit BMP (bottom-up BGR).
+    uint8_t row[3072];
+    for (int y = (int)h - 1; y >= 0; y--) {
+      const uint16_t *src = fb + y * (int)w;
+      for (uint32_t x = 0; x < w; x++) {
+        const uint16_t p = src[x];
+        const uint8_t r5 = (uint8_t)((p >> 11) & 0x1f);
+        const uint8_t g6 = (uint8_t)((p >> 5) & 0x3f);
+        const uint8_t b5 = (uint8_t)(p & 0x1f);
+        row[x * 3 + 0] = (uint8_t)((b5 << 3) | (b5 >> 2));
+        row[x * 3 + 1] = (uint8_t)((g6 << 2) | (g6 >> 4));
+        row[x * 3 + 2] = (uint8_t)((r5 << 3) | (r5 >> 2));
+      }
+      out.write(row, rowBytes);
+    }
+    out.close();
+    PlatformManager::getInstance().log(LOG_INFO, TAG, "panel grab %s (%ux%u)",
+                                       path, (unsigned)w, (unsigned)h);
+#else
+    PlatformManager::getInstance().log(LOG_WARN, TAG,
+                                       "SCREENGRAB unsupported on this board");
+#endif
     return 0;
   }
   }

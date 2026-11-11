@@ -605,7 +605,7 @@ void VIC::drawOverlay(uint8_t doiidx) {
 uint8_t VIC::nextRasterline() {
   rasterline++;
   uint8_t d011 = vicreg[0x11];
-  if (rasterline > 311) {
+  if (rasterline > C64_LAST_RASTERLINE) {
     rasterline = 0;
   } else if (rasterline == 49) {
     denbadline = (d011 & 0x10) ? true : false;

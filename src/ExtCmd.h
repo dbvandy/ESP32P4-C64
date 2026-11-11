@@ -348,6 +348,14 @@ enum class ExtCmd {
    * @brief Fill CrowPanel LIST window from the currently attached .d64.
    */
   LISTD64DIR = 52,
+
+  /**
+   * @brief Save a full-panel screen grab to SD card (grabs/).
+   *
+   * CrowPanel: 1024×600 RGB framebuffer BMP. Triggered by tapping the
+   * Commodore logo on the soft pad. No parameters needed.
+   */
+  SCREENGRAB = 53,
 };
 
 #endif // EXTCMD_H

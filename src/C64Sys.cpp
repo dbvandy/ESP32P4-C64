@@ -787,12 +787,15 @@ void C64Sys::run() {
     // games)
     badlinecycles = 0;
 
-    // calculate number of cycles to execute
+    // calculate number of cycles to execute (PAL: 63 cycles/line)
     numofcycles = 0;
-    int8_t numofcyclestoexe = 63 - badlinecycles - adjustcycles;
+    int8_t numofcyclestoexe =
+        (int8_t)C64_CYCLES_PER_LINE - badlinecycles - adjustcycles;
     if (numofcyclestoexe < 0) {
       numofcyclestoexe = 0;
     }
+    const uint8_t ciaHalfA = C64_CYCLES_PER_LINE / 2;        // 31
+    const uint8_t ciaHalfB = C64_CYCLES_PER_LINE - ciaHalfA; // 32
 
     // execute CPU cycles and check CIA timers
     while (numofcycles < numofcyclestoexe / 2) {
@@ -806,7 +809,7 @@ void C64Sys::run() {
         setPCToIntVec(getMem(0xfffe) + (getMem(0xffff) << 8), false);
       }
     }
-    checkciatimers(31);
+    checkciatimers(ciaHalfA);
 
     // draw rasterline
 #if !defined(LINUX_TEXTTERM)
@@ -825,7 +828,7 @@ void C64Sys::run() {
         setPCToIntVec(getMem(0xfffe) + (getMem(0xffff) << 8), false);
       }
     }
-    checkciatimers(32);
+    checkciatimers(ciaHalfB);
     adjustcycles = numofcycles - numofcyclestoexe;
     if (adjustcycles > 0) {
       adjustcycles = 0;
@@ -846,10 +849,12 @@ void C64Sys::run() {
     // fill audio buffer
     sid.fillBuffer(vic.rasterline);
 
-    // "throttle"
+    // "throttle" to PAL 50 Hz
     numofcyclespersecond.fetch_add(numofcycles, std::memory_order_release);
     int64_t nominaltime =
-        lastMeasuredTime + ((vic.rasterline + 1) * 1000000 / 50 / 312);
+        lastMeasuredTime +
+        (((int64_t)(vic.rasterline + 1) * 1000000LL) /
+         ((int64_t)C64_FRAME_RATE_HZ * (int64_t)C64_LINES_PER_FRAME));
     int64_t now = PlatformManager::getInstance().getTimeUS();
     if (nominaltime > now) {
       int64_t us = nominaltime - now;
@@ -858,7 +863,7 @@ void C64Sys::run() {
     }
 
     // get start time of frame, play audio
-    if (vic.rasterline == 311) {
+    if (vic.rasterline == C64_LAST_RASTERLINE) {
       lastMeasuredTime = PlatformManager::getInstance().getTimeUS();
       sid.playAudio();
       // check for "external commands" once per frame

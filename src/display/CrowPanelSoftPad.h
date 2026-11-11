@@ -27,6 +27,7 @@ constexpr int kProfileUser1 = 1;
 constexpr int kProfileUser2 = 2;
 constexpr int kProfileUser3 = 3;
 constexpr int kProfileHitBase = 110; // +0..3
+constexpr int kLogoHit = 120;        // Commodore logo → screen grab
 
 // JOY visible blue slots: left-middle FIRE + center blank.
 constexpr int kJoyFireSlot = 3;  // row1 col0
@@ -52,6 +53,7 @@ enum class Hit : int16_t {
   ProfileUser1 = kProfileHitBase + 1,
   ProfileUser2 = kProfileHitBase + 2,
   ProfileUser3 = kProfileHitBase + 3,
+  Logo = kLogoHit,
 };
 
 struct Slot {
