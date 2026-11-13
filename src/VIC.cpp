@@ -26,7 +26,9 @@
 
 static const char *TAG = "VIC";
 
-static bool collArr[4] = {false, true, true, true};
+// Multicolor FG/BG for sprite priority + $D01F collision (VIC article):
+// bitpair 00,01 = background; 10,11 = foreground. (Was wrongly marking 01 as FG.)
+static bool collArr[4] = {false, false, true, true};
 
 VIC::VIC() { bitmap = nullptr; }
 
@@ -274,6 +276,7 @@ void VIC::drawSpriteDataSC(uint8_t bitnr, int16_t xpos, uint8_t ypos,
   bool only38cols = !(vicreg[0x16] & 8);
   uint16_t low = only38cols ? 8 : 0;
   uint16_t high = only38cols ? 312 : 320;
+  const uint8_t higherMask = (uint8_t)(bitnr - 1); // sprites 0..N-1
   for (uint8_t x = 0; x < 3; x++) {
     uint8_t d = *data++;
     uint8_t bitval = 128;
@@ -292,8 +295,9 @@ void VIC::drawSpriteDataSC(uint8_t bitnr, int16_t xpos, uint8_t ypos,
           // sprite - data collision
           vicreg[0x1f] |= bitnr;
         }
-        if (bgspriteprio && spritedatacoll[xpos]) {
-          // background prio
+        const bool higherPri = (spritespritecoll[xpos] & higherMask) != 0;
+        if (higherPri || (bgspriteprio && spritedatacoll[xpos])) {
+          // lower priority than another sprite, or behind FG graphics
           idx++;
         } else {
           bitmap[idx++] = color;
@@ -319,6 +323,7 @@ void VIC::drawSpriteDataSCDS(uint8_t bitnr, int16_t xpos, uint8_t ypos,
   bool only38cols = !(vicreg[0x16] & 8);
   uint16_t low = only38cols ? 8 : 0;
   uint16_t high = only38cols ? 312 : 320;
+  const uint8_t higherMask = (uint8_t)(bitnr - 1);
   for (uint8_t x = 0; x < 3; x++) {
     uint8_t d = *data++;
     uint8_t bitval = 128;
@@ -337,24 +342,23 @@ void VIC::drawSpriteDataSCDS(uint8_t bitnr, int16_t xpos, uint8_t ypos,
           // sprite - data collision
           vicreg[0x1f] |= bitnr;
         }
-        if (bgspriteprio && spritedatacoll[xpos]) {
-          // background prio
-          idx++;
-        } else {
-          bitmap[idx++] = color;
+        for (int p = 0; p < 2; p++) {
+          const bool higherPri =
+              (spritespritecoll[xpos + p] & higherMask) != 0;
+          if (higherPri || (bgspriteprio && spritedatacoll[xpos + p])) {
+            idx++;
+          } else {
+            bitmap[idx++] = color;
+          }
         }
-        if (bgspriteprio && spritedatacoll[xpos + 1]) {
-          // background prio
-          idx++;
-        } else {
-          bitmap[idx++] = color;
+        uint8_t sprcoll0 = spritespritecoll[xpos];
+        uint8_t sprcoll1 = spritespritecoll[xpos + 1];
+        if (sprcoll0 != 0 || sprcoll1 != 0) {
+          vicreg[0x1e] |= sprcoll0 | sprcoll1 | bitnr;
         }
-        uint8_t sprcoll = spritespritecoll[xpos];
-        if (sprcoll != 0) {
-          // sprite - sprite collision
-          vicreg[0x1e] |= sprcoll | bitnr;
-        }
-        spritespritecoll[xpos++] = sprcoll | bitnr;
+        spritespritecoll[xpos] = sprcoll0 | bitnr;
+        spritespritecoll[xpos + 1] = sprcoll1 | bitnr;
+        xpos += 2;
       } else {
         idx += 2;
         xpos += 2;
@@ -378,30 +382,25 @@ void VIC::drawSpriteDataMC2Bits(uint8_t idxc, uint16_t &idx, int16_t &xpos,
   }
   if (idxc) {
     uint8_t bgspriteprio = vicreg[0x1b] & bitnr;
+    const uint8_t higherMask = (uint8_t)(bitnr - 1);
     if (spritedatacoll[xpos] || spritedatacoll[xpos + 1]) {
       // sprite - data collision
       vicreg[0x1f] |= bitnr;
     }
-    if (bgspriteprio && spritedatacoll[xpos]) {
-      // background prio
-      idx++;
-    } else {
-      bitmap[idx++] = tftcolor[idxc];
-    }
-    if (bgspriteprio && spritedatacoll[xpos + 1]) {
-      // background prio
-      idx++;
-    } else {
-      bitmap[idx++] = tftcolor[idxc];
+    for (int p = 0; p < 2; p++) {
+      const bool higherPri = (spritespritecoll[xpos + p] & higherMask) != 0;
+      if (higherPri || (bgspriteprio && spritedatacoll[xpos + p])) {
+        idx++;
+      } else {
+        bitmap[idx++] = tftcolor[idxc];
+      }
     }
     uint8_t bitnrcollxpos0 = spritespritecoll[xpos];
     uint8_t bitnrcollxpos1 = spritespritecoll[xpos + 1];
     if (bitnrcollxpos0 != 0) {
-      // sprite - sprite collision
       vicreg[0x1e] |= bitnrcollxpos0 | bitnr;
     }
     if (bitnrcollxpos1 != 0) {
-      // sprite - sprite collision
       vicreg[0x1e] |= bitnrcollxpos1 | bitnr;
     }
     spritespritecoll[xpos++] = bitnrcollxpos0 | bitnr;
@@ -437,21 +436,18 @@ void VIC::drawSpriteDataMCDS(uint8_t bitnr, int16_t xpos, uint8_t ypos,
   uint16_t idx = xpos + ypos * 320;
   for (uint8_t x = 0; x < 3; x++) {
     uint8_t d = *data++;
+    // X-expand: each MC pair becomes 4 pixels (draw twice, advancing).
     uint8_t idxc = (d & 192) >> 6;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
-    xpos -= 2;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
     idxc = (d & 48) >> 4;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
-    xpos -= 2;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
     idxc = (d & 12) >> 2;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
-    xpos -= 2;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
     idxc = (d & 3);
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
-    xpos -= 2;
     drawSpriteDataMC2Bits(idxc, idx, xpos, bitnr, tftcolor);
   }
 }
@@ -464,8 +460,10 @@ void VIC::drawSprites(uint8_t line) {
   uint8_t color01 = vicreg[0x25] & 0x0f;
   uint8_t color11 = vicreg[0x26] & 0x0f;
   memset(spritespritecoll, 0, sizeof(spritespritecoll));
-  uint8_t bitval = 128;
-  for (int8_t nr = 7; nr >= 0; nr--) {
+  // Draw sprite 0 first … 7 last; opaque pixels skip if a higher-priority
+  // sprite (lower number) already claimed the pixel — matches VIC-II.
+  for (uint8_t nr = 0; nr < 8; nr++) {
+    const uint8_t bitval = (uint8_t)(1u << nr);
     if (spritesenabled & bitval) {
       uint8_t facysize = (spritesdoubley & bitval) ? 2 : 1;
       uint8_t y = vicreg[0x01 + nr * 2];
@@ -474,7 +472,8 @@ void VIC::drawSprites(uint8_t line) {
         if (vicreg[0x10] & bitval) {
           x += 256;
         }
-        uint8_t ypos = line - 50;
+        // Align with display row (rasterline - 51).
+        uint8_t ypos = line - 51;
         uint16_t dataaddr = ram[screenmemstart + 1016 + nr] * 64;
         uint8_t *data = ram + vicmem + dataaddr + ((line - y) / facysize) * 3;
         uint8_t col = vicreg[0x27 + nr] & 0x0f;
@@ -493,7 +492,6 @@ void VIC::drawSprites(uint8_t line) {
         }
       }
     }
-    bitval >>= 1;
   }
   if (vicreg[0x1f] != 0) {
     if (vicreg[0x1a] & 2) {
@@ -712,7 +710,8 @@ void VIC::drawRasterline() {
         uint8_t ghostbyte = ecm ? ram[vicmem + 0x39ff] : ram[vicmem + 0x3fff];
         drawidleline(ghostbyte);
       }
-      drawSprites(rasterline - 1);
+      // Same raster as background (was rasterline-1 → sprites one line late).
+      drawSprites(rasterline);
       // draw overlay
       drawOverlay(0);
       drawOverlay(1);

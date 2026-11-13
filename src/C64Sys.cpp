@@ -781,11 +781,8 @@ void C64Sys::run() {
       continue;
     }
 
-    // prepare next rasterline
+    // prepare next rasterline (includes badline + sprite DMA cycle steal)
     badlinecycles = vic.nextRasterline();
-    // hack to make commando work (seems to have no negative effect to other
-    // games)
-    badlinecycles = 0;
 
     // calculate number of cycles to execute (PAL: 63 cycles/line)
     numofcycles = 0;
