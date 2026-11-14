@@ -32,3 +32,7 @@ esptool --chip esp32p4 -p COMx --flash-mode dio --flash-freq 80m --flash-size 16
 ```
 
 SHA256 (`CrowPanel_C64-v1.1.4.bin`): `CDE80542861BE453845C6948008E944BA900A5E65B81F044AC1F98E63B00EB31`
+
+## Web flasher (new panel)
+
+Browser install: [web-flasher/](../web-flasher/) — https://dbvandy.github.io/ESP32P4-C64/web-flasher/

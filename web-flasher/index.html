@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CrowPanel C64 — Web Flasher</title>
+  <meta name="description" content="Flash CrowPanel Advanced 10.1 ESP32-P4 Commodore 64 firmware from the browser." />
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    :root {
+      --bg: #1a1510;
+      --panel: #2a2218;
+      --ink: #e8dcc8;
+      --muted: #a89880;
+      --accent: #6b9e3e;
+      --warn: #c9a227;
+      --border: #4a3f30;
+      --mono: "IBM Plex Mono", "Consolas", "Courier New", monospace;
+      --sans: "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at top, #2c2418 0%, transparent 55%),
+        var(--bg);
+      line-height: 1.5;
+    }
+    main {
+      max-width: 42rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1 {
+      font-family: var(--mono);
+      font-size: clamp(1.4rem, 4vw, 1.85rem);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      margin: 0 0 0.35rem;
+    }
+    .tag {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 0.15rem 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    p { color: var(--muted); margin: 0 0 1rem; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.25rem 1.35rem;
+      margin: 1.25rem 0;
+    }
+    .panel h2 {
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      margin: 0 0 0.75rem;
+      color: var(--ink);
+    }
+    ol { margin: 0; padding-left: 1.2rem; color: var(--muted); }
+    li { margin: 0.4rem 0; }
+    li strong { color: var(--ink); font-weight: 600; }
+    .flash-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    esp-web-install-button {
+      display: inline-block;
+    }
+    esp-web-install-button:not(:defined) {
+      visibility: hidden;
+    }
+    .install-btn {
+      font-family: var(--mono);
+      font-size: 1rem;
+      padding: 0.75rem 1.4rem;
+      border: none;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #0f140a;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .install-btn:hover { filter: brightness(1.08); }
+    .unsupported {
+      color: var(--warn);
+      font-family: var(--mono);
+      font-size: 0.85rem;
+    }
+    .meta {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 1.5rem;
+    }
+    a { color: var(--accent); }
+    code {
+      font-family: var(--mono);
+      font-size: 0.85em;
+      background: #120e0a;
+      padding: 0.1em 0.35em;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>CrowPanel C64</h1>
+    <div class="tag">v1.1.4 · ESP32-P4 · full factory flash</div>
+    <p>
+      Install the Commodore 64 emulator firmware on a <strong style="color:var(--ink)">brand-new</strong>
+      CrowPanel Advanced 10.1&quot; (ESP32-P4) from Chrome or Edge — no Arduino IDE required.
+    </p>
+
+    <div class="panel">
+      <h2>Before you flash</h2>
+      <ol>
+        <li>Use <strong>Chrome</strong> or <strong>Edge</strong> on a desktop (Web Serial).</li>
+        <li>Plug the panel’s <strong>UART / CH340</strong> USB-C into the PC.</li>
+        <li>Hold <strong>BOOT</strong>, tap <strong>RESET</strong>, then release BOOT (download mode).</li>
+        <li>Click <strong>Install</strong>, pick the CH340 / USB-SERIAL port, allow erase if prompted.</li>
+        <li>When done: unplug UART (or release straps), power/reset so it boots from flash.</li>
+      </ol>
+    </div>
+
+    <div class="flash-row">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate" class="install-btn">Install v1.1.4</button>
+        <span slot="unsupported" class="unsupported">
+          Web Serial not available — open this page in Chrome or Edge on desktop.
+        </span>
+      </esp-web-install-button>
+    </div>
+
+    <p class="meta">
+      Writes bootloader + partitions + app (merged image @ 0x0).<br />
+      Source &amp; ROM:
+      <a href="https://github.com/dbvandy/ESP32P4-C64">github.com/dbvandy/ESP32P4-C64</a>
+      ·
+      <a href="https://github.com/dbvandy/ESP32P4-C64/releases/tag/Current-Release">Current Release</a>
+    </p>
+  </main>
+</body>
+</html>
