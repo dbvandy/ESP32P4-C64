@@ -60,10 +60,11 @@ void CPU6502::modeIndirectX() {
 }
 
 void CPU6502::modeIndirectY() {
-  uint16_t q = getMem(pc++);
-  zl = getMem(q++);
-  zh = getMem(q);
-  z = (y + (zl | (zh << 8)));
+  // 6502: pointer high byte wraps within zero page ($FF → $00), not to $100.
+  uint8_t ql = getMem(pc++);
+  zl = getMem(ql);
+  zh = getMem((uint8_t)(ql + 1u));
+  z = (uint16_t)(y + (uint16_t)(zl | ((uint16_t)zh << 8)));
 }
 
 void CPU6502::setNZ(uint8_t r) {

@@ -1,0 +1,450 @@
+#include "disk.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#define DISK_ALLOC(sz) heap_caps_malloc((sz), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#else
+#include <stdlib.h>
+#define DISK_ALLOC(sz) malloc(sz)
+#endif
+
+
+
+// ---- Geometry: four density zones (1541 schematic / disk format) ------------
+// Zone 0: tracks  1-17, 21 sectors, 26 drive-cycle byte period (fastest).
+// Zone 1: tracks 18-24, 19 sectors, 28.
+// Zone 2: tracks 25-30, 18 sectors, 30.
+// Zone 3: tracks 31-35, 17 sectors, 32 (slowest).
+// The byte period is 8 bit-cells at 16 MHz / {52,56,60,64} = {26,28,30,32} us,
+// and the drive CPU runs at 1 MHz, so it is that many drive cycles per GCR byte.
+static const unsigned ZONE_SECTORS[4] = {21u, 19u, 18u, 17u};
+static const unsigned ZONE_BYTE_CYCLES[4] = {26u, 28u, 30u, 32u};
+
+// One disk revolution is 200000 us (300 RPM). At the zone's byte period that is
+// this many GCR bytes on the track; the ring is padded to exactly this length so
+// a full rotation takes one revolution's worth of time.
+static unsigned zone_bytes_per_rev(unsigned zone) {
+    return 200000u / ZONE_BYTE_CYCLES[zone];
+}
+#define GCR_TRACK_MAXBYTES 7692u  // zone 0: 200000/26, the largest track
+
+unsigned disk_zone_of_track(unsigned track) {
+    if (track <= 17u) { return 0u; }
+    if (track <= 24u) { return 1u; }
+    if (track <= 30u) { return 2u; }
+    return 3u;
+}
+unsigned disk_sectors_in_track(unsigned track) {
+    if (track < 1u || track > DISK_TRACKS) { return 0u; }
+    return ZONE_SECTORS[disk_zone_of_track(track)];
+}
+unsigned disk_zone_byte_cycles(unsigned zone) { return ZONE_BYTE_CYCLES[zone & 3u]; }
+unsigned disk_track_byte_cycles(unsigned track) {
+    return ZONE_BYTE_CYCLES[disk_zone_of_track(track)];
+}
+
+// ---- GCR 4-to-5 table (published; "Inside Commodore DOS") -------------------
+// Each 4-bit nybble maps to a 5-bit code with no more than two consecutive zeros
+// and never ten consecutive ones, so a run of ten ones can only be a SYNC mark.
+static const uint8_t GCR[16] = {
+    0x0A, 0x0B, 0x12, 0x13, 0x0E, 0x0F, 0x16, 0x17,
+    0x09, 0x19, 0x1A, 0x1B, 0x0D, 0x1D, 0x1E, 0x15,
+};
+static int8_t gcr_inv[32];
+static bool gcr_inv_ready;
+static void gcr_build_inverse(void) {
+    if (gcr_inv_ready) { return; }
+    for (unsigned i = 0; i < 32u; i++) { gcr_inv[i] = -1; }
+    for (unsigned n = 0; n < 16u; n++) { gcr_inv[GCR[n]] = (int8_t)n; }
+    gcr_inv_ready = true;
+}
+
+// MSB-first bit writer/reader over a byte buffer.
+static void put_bits(uint8_t *buf, unsigned *bitpos, uint32_t value, unsigned nbits) {
+    for (unsigned i = 0; i < nbits; i++) {
+        unsigned bit = (value >> (nbits - 1u - i)) & 1u;
+        unsigned p = *bitpos;
+        if (bit) { buf[p >> 3] |= (uint8_t)(0x80u >> (p & 7u)); }
+        else { buf[p >> 3] &= (uint8_t)~(0x80u >> (p & 7u)); }
+        *bitpos = p + 1u;
+    }
+}
+static uint32_t get_bits(const uint8_t *buf, unsigned *bitpos, unsigned nbits) {
+    uint32_t v = 0;
+    for (unsigned i = 0; i < nbits; i++) {
+        unsigned p = *bitpos;
+        unsigned bit = (buf[p >> 3] >> (7u - (p & 7u))) & 1u;
+        v = (v << 1) | bit;
+        *bitpos = p + 1u;
+    }
+    return v;
+}
+
+void gcr_encode(const uint8_t *in, unsigned in_len, uint8_t *out) {
+    unsigned obits = 0;
+    unsigned obytes = in_len * 5u / 4u;
+    memset(out, 0, obytes);
+    for (unsigned i = 0; i < in_len; i++) {
+        put_bits(out, &obits, GCR[(in[i] >> 4) & 0x0Fu], 5u);
+        put_bits(out, &obits, GCR[in[i] & 0x0Fu], 5u);
+    }
+}
+bool gcr_decode(const uint8_t *in, unsigned in_len, uint8_t *out) {
+    gcr_build_inverse();
+    unsigned ibits = 0;
+    unsigned groups = in_len / 5u;  // each 5 GCR bytes -> 4 data bytes (8 nybbles)
+    for (unsigned g = 0; g < groups; g++) {
+        for (unsigned h = 0; h < 8u; h += 2u) {
+            uint32_t c_hi = get_bits(in, &ibits, 5u);
+            uint32_t c_lo = get_bits(in, &ibits, 5u);
+            int8_t hi = gcr_inv[c_hi & 0x1Fu];
+            int8_t lo = gcr_inv[c_lo & 0x1Fu];
+            if (hi < 0 || lo < 0) { return false; }
+            out[g * 4u + h / 2u] = (uint8_t)(((unsigned)hi << 4) | (unsigned)lo);
+        }
+    }
+    return true;
+}
+
+uint8_t disk_header_checksum(uint8_t sector, uint8_t track, uint8_t id2, uint8_t id1) {
+    return (uint8_t)(sector ^ track ^ id2 ^ id1);
+}
+uint8_t disk_data_checksum(const uint8_t *data256) {
+    uint8_t c = 0;
+    for (unsigned i = 0; i < 256u; i++) { c ^= data256[i]; }
+    return c;
+}
+
+// ---- The mounted image and its GCR rings ------------------------------------
+static uint8_t *image;
+static bool mounted;
+static bool clean_path;
+static char mount_path[256];
+static uint8_t disk_id1, disk_id2;
+static uint8_t *error_info;
+static bool has_error_info;
+static uint8_t *gcr_tracks; /* DISK_TRACKS * GCR_TRACK_MAXBYTES */
+static unsigned gcr_nbytes[DISK_TRACKS];
+static uint8_t *stage_image;
+static uint8_t *stage_gcr;
+static unsigned stage_nbytes[DISK_TRACKS];
+static uint8_t stage_id1, stage_id2;
+static uint8_t *stage_error_info;
+static bool stage_has_error_info;
+static bool psram_ready;
+static bool image_dirty;
+static bool gcr_ahead_of_image; // GCR rings written without updating image[]
+
+bool disk_psram_init(void) {
+    if (psram_ready) return true;
+    image = (uint8_t *)DISK_ALLOC(D64_STD_SIZE);
+    stage_image = (uint8_t *)DISK_ALLOC(D64_STD_SIZE);
+    gcr_tracks = (uint8_t *)DISK_ALLOC(DISK_TRACKS * GCR_TRACK_MAXBYTES);
+    stage_gcr = (uint8_t *)DISK_ALLOC(DISK_TRACKS * GCR_TRACK_MAXBYTES);
+    error_info = (uint8_t *)DISK_ALLOC(DISK_TOTAL_SECTORS);
+    stage_error_info = (uint8_t *)DISK_ALLOC(DISK_TOTAL_SECTORS);
+    if (!image || !stage_image || !gcr_tracks || !stage_gcr || !error_info || !stage_error_info)
+        return false;
+    psram_ready = true;
+    return true;
+}
+static uint8_t *gcr_track_ptr(uint8_t *base, unsigned track0) {
+    return base + track0 * GCR_TRACK_MAXBYTES;
+}
+
+// Byte offset of a sector in the .d64 (sectors laid out track 1 first, in order).
+static unsigned sector_offset(unsigned track, unsigned sector) {
+    unsigned idx = 0;
+    for (unsigned t = 1; t < track; t++) { idx += disk_sectors_in_track(t); }
+    idx += sector;
+    return idx * 256u;
+}
+
+// A sector on the surface: SYNC, header block, header gap, SYNC, data block, tail
+// gap. The header is 8 bytes -> 10 GCR; the data block is 260 bytes ([$07][256]
+// [checksum][00][00]) -> 325 GCR. Source: the documented 1541 sector format.
+static void build_sector(uint8_t *buf, unsigned *bitpos,
+                         unsigned track, unsigned sector) {
+    for (unsigned i = 0; i < 5u; i++) { put_bits(buf, bitpos, 0xFFu, 8u); }  // SYNC
+
+    uint8_t hdr[8];
+    hdr[0] = 0x08u;  // header block id
+    hdr[1] = disk_header_checksum((uint8_t)sector, (uint8_t)track, stage_id2, stage_id1);
+    hdr[2] = (uint8_t)sector;
+    hdr[3] = (uint8_t)track;
+    hdr[4] = stage_id2;
+    hdr[5] = stage_id1;
+    hdr[6] = 0x0Fu;
+    hdr[7] = 0x0Fu;
+    uint8_t hdr_gcr[10];
+    gcr_encode(hdr, 8u, hdr_gcr);
+    for (unsigned i = 0; i < 10u; i++) { put_bits(buf, bitpos, hdr_gcr[i], 8u); }
+
+    for (unsigned i = 0; i < 9u; i++) { put_bits(buf, bitpos, 0x55u, 8u); }  // header gap
+    for (unsigned i = 0; i < 5u; i++) { put_bits(buf, bitpos, 0xFFu, 8u); }  // SYNC
+
+    uint8_t db[260];
+    memset(db, 0, sizeof(db));
+    db[0] = 0x07u;  // data block id
+    memcpy(&db[1], &stage_image[sector_offset(track, sector)], 256u);
+    db[257] = disk_data_checksum(&db[1]);
+    uint8_t data_gcr[325];
+    gcr_encode(db, 260u, data_gcr);
+    for (unsigned i = 0; i < 325u; i++) { put_bits(buf, bitpos, data_gcr[i], 8u); }
+
+    for (unsigned i = 0; i < 6u; i++) { put_bits(buf, bitpos, 0x55u, 8u); }  // tail gap
+}
+
+static void build_track(unsigned track) {
+    unsigned zone = disk_zone_of_track(track);
+    unsigned nbytes = zone_bytes_per_rev(zone);
+    uint8_t *buf = gcr_track_ptr(stage_gcr, track - 1u);
+    memset(buf, 0x55u, GCR_TRACK_MAXBYTES);  // default filler is gap
+    unsigned bitpos = 0;
+    unsigned nsec = disk_sectors_in_track(track);
+    for (unsigned s = 0; s < nsec; s++) { build_sector(buf, &bitpos, track, s); }
+    // Remaining bytes up to one revolution stay as $55 gap (set by memset).
+    stage_nbytes[track - 1u] = nbytes;
+}
+
+// Prepare the candidate GCR rings and ids from stage_image. Returns false to reject a
+// candidate; a future content check belongs here, before any authoritative write.
+static bool mount_prepare(void) {
+    // Disk id lives in the BAM at track 18 sector 0, offset $A2/$A3.
+    unsigned bam = sector_offset(18u, 0u);
+    stage_id1 = stage_image[bam + 0xA2u];
+    stage_id2 = stage_image[bam + 0xA3u];
+    for (unsigned t = 1; t <= DISK_TRACKS; t++) { build_track(t); }
+    return true;
+}
+
+// Commit the prepared candidate to the authoritative globals. Every step is total, so
+// this is the single point at which the mounted disk changes. A NULL path is an
+// in-memory mount, which has nothing to write back.
+static void mount_commit(const char *path, size_t plen) {
+    memcpy(image, stage_image, D64_STD_SIZE);
+    memcpy(gcr_tracks, stage_gcr, DISK_TRACKS * GCR_TRACK_MAXBYTES);
+    memcpy(gcr_nbytes, stage_nbytes, sizeof gcr_nbytes);
+    disk_id1 = stage_id1;
+    disk_id2 = stage_id2;
+    has_error_info = stage_has_error_info;
+    if (has_error_info) {
+        memcpy(error_info, stage_error_info, DISK_TOTAL_SECTORS);
+    }
+    if (path != NULL) {
+        memcpy(mount_path, path, plen + 1u);
+        clean_path = true;
+    } else {
+        mount_path[0] = '\0';
+        clean_path = false;
+    }
+    mounted = true;
+    image_dirty = false;
+}
+
+bool disk_mount_image(const uint8_t *data, size_t len) {
+    if (!disk_psram_init()) { return false; }
+    if (len != D64_STD_SIZE && len != D64_ERR_SIZE) { return false; }  // 35-track only
+    memcpy(stage_image, data, D64_STD_SIZE);
+    stage_has_error_info = (len == D64_ERR_SIZE);
+    if (stage_has_error_info) {
+        memcpy(stage_error_info, &data[D64_STD_SIZE], DISK_TOTAL_SECTORS);
+    }
+    if (!mount_prepare()) { return false; }
+    mount_commit(NULL, 0u);
+    return true;
+}
+
+bool disk_mount(const char *path) {
+    if (!disk_psram_init()) { return false; }
+    // A path we cannot store cannot be written back later; reject it up front rather
+    // than mounting a disk whose SAVE would be silently dropped on exit.
+    size_t plen = strlen(path);
+    if (plen >= sizeof(mount_path)) { return false; }
+    FILE *f = fopen(path, "rb");
+    if (!f) { return false; }
+    size_t n = fread(stage_image, 1u, D64_STD_SIZE, f);
+    uint8_t err[DISK_TOTAL_SECTORS];
+    size_t e = fread(err, 1u, DISK_TOTAL_SECTORS, f);  // optional error-info block
+    int extra = fgetc(f);  // reject anything longer than either accepted size
+    fclose(f);
+    if (n != D64_STD_SIZE || extra != EOF) { return false; }
+    if (e != 0u && e != DISK_TOTAL_SECTORS) { return false; }
+    stage_has_error_info = (e == DISK_TOTAL_SECTORS);
+    if (stage_has_error_info) {
+        memcpy(stage_error_info, err, DISK_TOTAL_SECTORS);
+    }
+    if (!mount_prepare()) { return false; }
+    mount_commit(path, plen);
+    return true;
+}
+
+void disk_unmount(void) {
+    mounted = false;
+    clean_path = false;
+    has_error_info = false;
+    mount_path[0] = '\0';
+    memset(gcr_nbytes, 0, sizeof(gcr_nbytes));
+}
+bool disk_present(void) { return mounted; }
+
+const uint8_t *disk_track_gcr(unsigned track, unsigned *nbits) {
+    if (!mounted || track < 1u || track > DISK_TRACKS) {
+        *nbits = 0;
+        return NULL;
+    }
+    *nbits = gcr_nbytes[track - 1u] * 8u;
+    return gcr_track_ptr(gcr_tracks, track - 1u);
+}
+
+// ---- Write path -------------------------------------------------------------
+
+void disk_write_gcr_byte(unsigned track, unsigned bit_index, uint8_t value) {
+    if (!mounted || track < 1u || track > DISK_TRACKS) { return; }
+    unsigned nbits = gcr_nbytes[track - 1u] * 8u;
+    if (nbits == 0u) { return; }
+    uint8_t *buf = gcr_track_ptr(gcr_tracks, track - 1u);
+    for (unsigned i = 0; i < 8u; i++) {
+        unsigned p = (bit_index + i) % nbits;
+        if ((value >> (7u - i)) & 1u) { buf[p >> 3] |= (uint8_t)(0x80u >> (p & 7u)); }
+        else { buf[p >> 3] &= (uint8_t)~(0x80u >> (p & 7u)); }
+    }
+    image_dirty = true;
+    gcr_ahead_of_image = true;
+}
+
+static unsigned ring_bit(const uint8_t *ring, unsigned p) {
+    return (ring[p >> 3] >> (7u - (p & 7u))) & 1u;
+}
+// Advance *pos to the first bit after the next SYNC (>= 10 one-bits): the byte
+// boundary the hardware frames to. Returns false if no SYNC within the budget.
+static bool ring_find_sync(const uint8_t *ring, unsigned nbits, unsigned *pos, unsigned budget) {
+    unsigned ones = 0;
+    while (budget-- > 0u) {
+        unsigned b = ring_bit(ring, *pos);
+        if (b == 0u && ones >= 10u) { return true; }  // *pos is at the first block bit
+        ones = b ? (ones + 1u) : 0u;
+        *pos = (*pos + 1u) % nbits;
+    }
+    return false;
+}
+static void ring_read(const uint8_t *ring, unsigned nbits, unsigned *pos, uint8_t *out, unsigned n) {
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t v = 0;
+        for (unsigned k = 0; k < 8u; k++) {
+            v = (uint8_t)((v << 1) | ring_bit(ring, *pos));
+            *pos = (*pos + 1u) % nbits;
+        }
+        out[i] = v;
+    }
+}
+
+bool disk_read_sector(unsigned track, unsigned sector, uint8_t out[256]) {
+    unsigned nbits = 0;
+    const uint8_t *ring = disk_track_gcr(track, &nbits);
+    if (ring == NULL || nbits == 0u) { return false; }
+    unsigned pos = 0;
+    // Two full revolutions' worth of SYNC marks is more than enough to see every
+    // sector regardless of where the scan starts.
+    unsigned tries = disk_sectors_in_track(track) * 4u + 4u;
+    while (tries-- > 0u) {
+        if (!ring_find_sync(ring, nbits, &pos, nbits * 2u)) { return false; }
+        uint8_t hdr_gcr[10], hdr[8];
+        ring_read(ring, nbits, &pos, hdr_gcr, 10u);
+        if (!gcr_decode(hdr_gcr, 10u, hdr)) { continue; }
+        if (hdr[0] != 0x08u || hdr[3] != (uint8_t)track || hdr[2] != (uint8_t)sector) { continue; }
+        if (!ring_find_sync(ring, nbits, &pos, nbits)) { return false; }
+        uint8_t data_gcr[325], data[260];
+        ring_read(ring, nbits, &pos, data_gcr, 325u);
+        if (!gcr_decode(data_gcr, 325u, data) || data[0] != 0x07u) { return false; }
+        memcpy(out, &data[1], 256u);
+        return true;
+    }
+    return false;
+}
+
+// Direct D64 image I/O for the drive job trap (bypass live GCR bit timing).
+bool disk_image_read_sector(unsigned track, unsigned sector, uint8_t out[256]) {
+    if (!mounted || image == NULL) { return false; }
+    if (track < 1u || track > DISK_TRACKS) { return false; }
+    if (sector >= disk_sectors_in_track(track)) { return false; }
+    if (gcr_ahead_of_image) {
+        disk_sync_image_from_gcr();
+        gcr_ahead_of_image = false;
+    }
+    memcpy(out, &image[sector_offset(track, sector)], 256u);
+    return true;
+}
+
+bool disk_image_write_sector(unsigned track, unsigned sector,
+                             const uint8_t data[256]) {
+    if (!mounted || image == NULL) { return false; }
+    if (track < 1u || track > DISK_TRACKS) { return false; }
+    if (sector >= disk_sectors_in_track(track)) { return false; }
+    memcpy(&image[sector_offset(track, sector)], data, 256u);
+    image_dirty = true;
+    gcr_ahead_of_image = false; // image is authoritative for this write
+    // Rebuild this track's GCR so the live head path stays consistent.
+    memcpy(stage_image, image, D64_STD_SIZE);
+    stage_id1 = disk_id1;
+    stage_id2 = disk_id2;
+    build_track(track);
+    memcpy(gcr_track_ptr(gcr_tracks, track - 1u),
+           gcr_track_ptr(stage_gcr, track - 1u), GCR_TRACK_MAXBYTES);
+    gcr_nbytes[track - 1u] = stage_nbytes[track - 1u];
+    return true;
+}
+
+void disk_get_id(uint8_t *id1, uint8_t *id2) {
+    if (id1) { *id1 = mounted ? disk_id1 : 0; }
+    if (id2) { *id2 = mounted ? disk_id2 : 0; }
+}
+
+bool disk_is_dirty(void) { return image_dirty; }
+void disk_mark_clean(void) { image_dirty = false; }
+
+const uint8_t *disk_image_bytes(size_t *len_out) {
+    if (!mounted || image == NULL) {
+        if (len_out) { *len_out = 0; }
+        return NULL;
+    }
+    if (len_out) {
+        *len_out = has_error_info ? D64_ERR_SIZE : D64_STD_SIZE;
+    }
+    return image;
+}
+
+void disk_sync_image_from_gcr(void) {
+    if (!mounted || image == NULL) { return; }
+    // Custom bit-bang may have written GCR rings without updating image[].
+    // Re-decode every sector so Floppy hooks + writeback see the same bytes.
+    uint8_t buf[256];
+    for (unsigned t = 1; t <= DISK_TRACKS; t++) {
+        unsigned nsec = disk_sectors_in_track(t);
+        for (unsigned s = 0; s < nsec; s++) {
+            if (disk_read_sector(t, s, buf)) {
+                memcpy(&image[sector_offset(t, s)], buf, 256u);
+            }
+        }
+    }
+    gcr_ahead_of_image = false;
+}
+
+bool disk_writeback(void) {
+    if (!mounted || !clean_path) { return false; }
+    disk_sync_image_from_gcr();
+    FILE *f = fopen(mount_path, "wb");
+    if (f == NULL) { return false; }
+    size_t want = has_error_info ? D64_ERR_SIZE : D64_STD_SIZE;
+    size_t n = fwrite(image, 1u, D64_STD_SIZE, f);
+    if (has_error_info) {
+        n += fwrite(error_info, 1u, DISK_TOTAL_SECTORS, f);
+    }
+    bool ok = (n == want) && (fflush(f) == 0);
+    if (fclose(f) != 0) { ok = false; }
+    if (ok) { image_dirty = false; }
+    return ok;
+}

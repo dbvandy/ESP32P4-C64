@@ -356,6 +356,14 @@ enum class ExtCmd {
    * Commodore logo on the soft pad. No parameters needed.
    */
   SCREENGRAB = 53,
+
+  /**
+   * @brief Toggle CrowPanel drive mode: fast Floppy (Kernal IEC hooks) vs
+   * True 1541 (hardware-style IEC / drive CPU path).
+   *
+   * No parameters needed.
+   */
+  TOGGLETRUE1541 = 54,
 };
 
 #endif // EXTCMD_H

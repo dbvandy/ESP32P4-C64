@@ -30,11 +30,52 @@
 #include <cstdio>
 #include <sys/stat.h>
 #endif
+#include "true1541/True1541.h"
 #include <algorithm>
 #include <cstring>
 #include <string>
 
 static const char *TAG = "ExternalCmds";
+static std::string gLastAttachedD64;
+
+// THEC64 Mini convention: name ends with _AD before .d64 → accurate/true 1541.
+static bool nameRequestsAccurateDisk(const std::string &name) {
+  std::string lower = name;
+  for (char &c : lower) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  // Strip directory prefixes; match basename …_ad.d64
+  const size_t slash = lower.find_last_of("/\\");
+  const std::string base =
+      (slash == std::string::npos) ? lower : lower.substr(slash + 1);
+  const size_t dot = base.rfind(".d64");
+  const std::string stem =
+      (dot == std::string::npos) ? base : base.substr(0, dot);
+  return stem.size() >= 3 && stem.compare(stem.size() - 3, 3, "_ad") == 0;
+}
+
+// Match THEC64 Mini: *_AD.d64 enables True 1541; otherwise Fast Floppy.
+static void applyAccurateDiskFromName(C64Sys *cpu, const std::string &dirname) {
+  const bool wantTrue = nameRequestsAccurateDisk(dirname);
+  if (cpu->true1541Mode == wantTrue) {
+    True1541::setActive(wantTrue);
+    return;
+  }
+  if (cpu->true1541Mode && !wantTrue) {
+    True1541::writeback();
+    True1541::detach();
+  }
+  cpu->true1541Mode = wantTrue;
+  True1541::setActive(wantTrue);
+#if defined(BOARD_CROWPANEL_P4)
+  CrowPanelHw::setTrue1541(wantTrue);
+#endif
+  PlatformManager::getInstance().log(
+      LOG_INFO, TAG, "%s → drive mode = %s", dirname.c_str(),
+      wantTrue ? "True 1541 (_AD)" : "fast Floppy");
+}
 
 void ExternalCmds::init(uint8_t *ram, C64Sys *cpu) {
   this->ram = ram;
@@ -311,13 +352,22 @@ uint8_t ExternalCmds::executeNextExternalCmd() {
       return 0;
     }
     cpu->cpuhalted = true;
+    applyAccurateDiskFromName(cpu, dirname);
     bool ok = cpu->floppy.attach(dirname);
     if (ok) {
+      gLastAttachedD64 = dirname;
+      // Mount hardware image only in True 1541 mode (*_AD.d64 or toggle).
+      if (cpu->true1541Mode) {
+        True1541::setActive(true);
+        True1541::attachD64(dirname);
+      }
       cpu->vic.drawDOIBox((uint8_t *)"\xf\xb", 37, 23, 2, 1, 1, 0, 4, 0);
 #if defined(BOARD_CROWPANEL_P4)
       CrowPanelHw::setAttachedDisk(dirname.c_str());
 #endif
     } else {
+      gLastAttachedD64.clear();
+      True1541::detach();
       cpu->vic.drawDOIBox((uint8_t *)"\xe\xf", 37, 23, 2, 1, 1, 0, 4, 0);
 #if defined(BOARD_CROWPANEL_P4)
       CrowPanelHw::setAttachedDisk(nullptr);
@@ -442,14 +492,22 @@ uint8_t ExternalCmds::executeNextExternalCmd() {
       }
       PlatformManager::getInstance().log(
           LOG_INFO, TAG, "try to attach d64 file %s", dirname.c_str());
+      applyAccurateDiskFromName(cpu, dirname);
       bool d64attached = cpu->floppy.attach(dirname);
       if (!d64attached) {
+        gLastAttachedD64.clear();
+        True1541::detach();
         cpu->vic.drawDOIBox((uint8_t *)"\xe\xf", 37, 23, 2, 1, 1, 0, 4, 0);
 #if defined(BOARD_CROWPANEL_P4)
         CrowPanelHw::setAttachedDisk(nullptr);
 #endif
         PlatformManager::getInstance().log(LOG_INFO, TAG, "d64 file not found");
       } else {
+        gLastAttachedD64 = dirname;
+        if (cpu->true1541Mode) {
+          True1541::setActive(true);
+          True1541::attachD64(dirname);
+        }
         cpu->vic.drawDOIBox((uint8_t *)"\xf\xb", 37, 23, 2, 1, 1, 0, 4, 0);
 #if defined(BOARD_CROWPANEL_P4)
         CrowPanelHw::setAttachedDisk(dirname.c_str());
@@ -463,6 +521,8 @@ uint8_t ExternalCmds::executeNextExternalCmd() {
     if (cpu->floppy.fsinitialized) {
       cpu->floppy.detach();
     }
+    True1541::detach();
+    gLastAttachedD64.clear();
     cpu->vic.drawDOIBox((uint8_t *)"\xe\xf", 37, 23, 2, 1, 1, 0, 4, 0);
 #if defined(BOARD_CROWPANEL_P4)
     CrowPanelHw::setAttachedDisk(nullptr);
@@ -567,6 +627,28 @@ uint8_t ExternalCmds::executeNextExternalCmd() {
   case ExtCmd::KBJOYSTICKMODEOFF:
     setNoJoyB();
     return 0;
+  case ExtCmd::TOGGLETRUE1541: {
+    cpu->true1541Mode = !cpu->true1541Mode;
+    True1541::setActive(cpu->true1541Mode);
+#if defined(BOARD_CROWPANEL_P4)
+    CrowPanelHw::setTrue1541(cpu->true1541Mode);
+#endif
+    if (cpu->true1541Mode) {
+      if (!gLastAttachedD64.empty()) {
+        True1541::attachD64(gLastAttachedD64); // mount + spinUp inside
+      } else {
+        True1541::reset();
+        True1541::spinUp();
+      }
+    } else {
+      True1541::writeback();
+      True1541::detach();
+    }
+    PlatformManager::getInstance().log(
+        LOG_INFO, TAG, "drive mode = %s",
+        cpu->true1541Mode ? "True 1541" : "fast Floppy");
+    return 0;
+  }
   case ExtCmd::GETSTATUS:
     // just send type 1 notification
     PlatformManager::getInstance().log(LOG_INFO, TAG, "send status to client");

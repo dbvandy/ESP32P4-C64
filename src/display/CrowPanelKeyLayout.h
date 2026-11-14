@@ -33,7 +33,7 @@ enum class CrowKeyKind : uint8_t {
   ExtVolDn,
   ExtJoy1,
   ExtJoy2,
-  ExtJoyOff,
+  ExtTrue1541, // was JOFF — toggles fast Floppy vs True 1541 drive mode
   None
 };
 
@@ -149,7 +149,8 @@ inline constexpr CrowKeyDef CrowKeys[] = {
     {3, 6, 3, "PAD", nullptr, CrowKeyKind::ExtPad, {0xff, 0xff, 0}},
     {6, 6, 3, "J1", nullptr, CrowKeyKind::ExtJoy1, {0xff, 0xff, 0}},
     {9, 6, 3, "J2", nullptr, CrowKeyKind::ExtJoy2, {0xff, 0xff, 0}},
-    {12, 6, 3, "JOFF", nullptr, CrowKeyKind::ExtJoyOff, {0xff, 0xff, 0}},
+    // Face text is set at draw time (FAST 1541 / TRUE 1541); not lit when active.
+    {12, 6, 3, "FAST 1541", nullptr, CrowKeyKind::ExtTrue1541, {0xff, 0xff, 0}},
     {15, 6, 3, "SETUP", nullptr, CrowKeyKind::ExtSetup, {0xff, 0xff, 0}},
 };
 
@@ -164,7 +165,7 @@ inline bool crowIsCtrlKind(CrowKeyKind k) {
          k == CrowKeyKind::ExtProg || k == CrowKeyKind::ExtPad ||
          k == CrowKeyKind::ExtVolUp || k == CrowKeyKind::ExtVolDn ||
          k == CrowKeyKind::ExtJoy1 || k == CrowKeyKind::ExtJoy2 ||
-         k == CrowKeyKind::ExtJoyOff;
+         k == CrowKeyKind::ExtTrue1541;
 }
 
 inline bool crowExtCmdForKind(CrowKeyKind kind, ExtCmd &cmd, uint8_t &param0) {
@@ -215,8 +216,8 @@ inline bool crowExtCmdForKind(CrowKeyKind kind, ExtCmd &cmd, uint8_t &param0) {
   case CrowKeyKind::ExtJoy2:
     cmd = ExtCmd::KBJOYSTICKMODE2;
     return true;
-  case CrowKeyKind::ExtJoyOff:
-    cmd = ExtCmd::KBJOYSTICKMODEOFF;
+  case CrowKeyKind::ExtTrue1541:
+    cmd = ExtCmd::TOGGLETRUE1541;
     return true;
   default:
     return false;

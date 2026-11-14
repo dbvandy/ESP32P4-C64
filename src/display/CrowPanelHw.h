@@ -70,6 +70,10 @@ const char *attachedDisk();
 void pulseDriveActivity();
 void tickDriveActivity();
 bool driveReading();
+
+// Drive emulation: false = fast Floppy (Kernal hooks), true = True 1541 path.
+void setTrue1541(bool on);
+bool true1541();
 } // namespace CrowPanelHw
 
 #endif

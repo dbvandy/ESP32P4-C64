@@ -19,6 +19,8 @@
 #include "fs/FileFactory.h"
 #include "platform/PlatformManager.h"
 #include "roms/1541.h"
+#include "true1541/True1541.h"
+#include "true1541/disk.h"
 #if defined(BOARD_CROWPANEL_P4)
 #include "display/CrowPanelHw.h"
 #define CROW_DRIVE_ACT() CrowPanelHw::pulseDriveActivity()
@@ -78,14 +80,26 @@ uint16_t countBitsLimited(uint32_t mask, uint8_t limit) {
   return cnt;
 }
 
+void Floppy::clearSeqChannel(uint8_t channel) {
+  if (channel >= 16) {
+    return;
+  }
+  channels[channel].seqActive = false;
+  channels[channel].seqIdx = 0;
+  channels[channel].seqData.clear();
+  channels[channel].seqName.clear();
+}
+
 void Floppy::initChannels() {
-  for (auto &ch : channels) {
+  for (uint8_t i = 0; i < 16; i++) {
+    auto &ch = channels[i];
     ch.buffernr = 0xff;
     ch.hasChannelName = false;
     ch.isOpen = false;
     ch.rawBlock = false;
     ch.bufferidx = 0;
     ch.buffersize = 0;
+    clearSeqChannel(i);
   }
   for (auto &bm : bufferMeta) {
     bm.dirty = false;
@@ -94,6 +108,117 @@ void Floppy::initChannels() {
   }
   dirTrack = 0;
   dirSector = 0;
+}
+
+bool Floppy::prefetchFileChain(uint8_t channel, uint8_t startT,
+                               uint8_t startS) {
+  clearSeqChannel(channel);
+  if (startT < 1 || startT > 40) {
+    return false;
+  }
+  uint8_t t = startT;
+  uint8_t s = startS;
+  uint8_t secbuf[256];
+  int guard = 0;
+  channels[channel].seqData.reserve(4096 + 64);
+  while (t != 0 && guard++ < 1024) {
+    if (s >= sectorsPerTrack[t] || !mediaReadSector(t, s, secbuf)) {
+      PlatformManager::getInstance().log(
+          LOG_ERROR, TAG, "prefetch: read fail T=%u S=%u", (unsigned)t,
+          (unsigned)s);
+      clearSeqChannel(channel);
+      return false;
+    }
+    const uint8_t nt = secbuf[0];
+    const uint8_t ns = secbuf[1];
+    if (nt == 0) {
+      // Last sector: data bytes at indices 2..ns inclusive (VICE / 1541).
+      if (ns >= 2) {
+        channels[channel].seqData.insert(channels[channel].seqData.end(),
+                                         secbuf + 2, secbuf + ns + 1);
+      }
+      break;
+    }
+    channels[channel].seqData.insert(channels[channel].seqData.end(),
+                                     secbuf + 2, secbuf + 256);
+    t = nt;
+    s = ns;
+  }
+  channels[channel].seqIdx = 0;
+  channels[channel].seqActive = !channels[channel].seqData.empty();
+  channels[channel].seqName = name;
+  if (channels[channel].seqActive) {
+    PlatformManager::getInstance().log(
+        LOG_INFO, TAG, "prefetch \"%s\" %u bytes (chain linear)",
+        name.c_str(), (unsigned)channels[channel].seqData.size());
+  }
+  return channels[channel].seqActive;
+}
+
+void Floppy::verifyMapLoadAgainstHostRam(uint8_t channel) {
+  if (!hostRam || channel >= 16 || !channels[channel].seqActive) {
+    return;
+  }
+  const std::string &nm = channels[channel].seqName;
+  if (nm.size() < 3) {
+    return;
+  }
+  // MAP*, MON*, MOB* — map is the terrain skew case.
+  const bool isMap = (nm[0] == 'M' || nm[0] == 'm') &&
+                     (nm[1] == 'A' || nm[1] == 'a') &&
+                     (nm[2] == 'P' || nm[2] == 'p');
+  if (!isMap) {
+    return;
+  }
+  const auto &data = channels[channel].seqData;
+  if (data.size() < 3) {
+    return;
+  }
+  const uint16_t loadAddr =
+      (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+  const size_t payload = data.size() - 2;
+  size_t mismatches = 0;
+  size_t firstDiff = (size_t)-1;
+  for (size_t i = 0; i < payload; i++) {
+    const uint16_t a = (uint16_t)(loadAddr + (uint16_t)i);
+    if (hostRam[a] != data[2 + i]) {
+      if (firstDiff == (size_t)-1) {
+        firstDiff = i;
+      }
+      mismatches++;
+    }
+  }
+  // Shift signatures vs disk payload (header kept as tiles / drop first tile).
+  size_t shiftPlus1 = 0, shiftMinus1 = 0, hdrAsData = 0;
+  if (payload >= 64 && loadAddr == 0x1000) {
+    for (size_t i = 0; i + 1 < payload && i < 256; i++) {
+      if (hostRam[loadAddr + i] == data[2 + i + 1]) {
+        shiftMinus1++; // RAM looks like disk dropped first tile
+      }
+      if (i + 1 < payload && hostRam[loadAddr + i + 1] == data[2 + i]) {
+        shiftPlus1++;
+      }
+    }
+    if (payload >= 2) {
+      for (size_t i = 0; i < payload && i < 256; i++) {
+        if (hostRam[loadAddr + i] == data[i]) { // incl 2-byte hdr as tiles
+          hdrAsData++;
+        }
+      }
+    }
+  }
+  PlatformManager::getInstance().log(
+      LOG_INFO, TAG,
+      "MAP verify \"%s\" addr=$%04x file=%u payload=%u mismatches=%u "
+      "firstDiff=%d shift-1~%u shift+1~%u hdrAsData~%u",
+      nm.c_str(), (unsigned)loadAddr, (unsigned)data.size(),
+      (unsigned)payload, (unsigned)mismatches,
+      firstDiff == (size_t)-1 ? -1 : (int)firstDiff, (unsigned)shiftMinus1,
+      (unsigned)shiftPlus1, (unsigned)hdrAsData);
+  if (mismatches == 0) {
+    PlatformManager::getInstance().log(LOG_INFO, TAG,
+                                       "MAP verify OK — RAM matches disk");
+  }
 }
 
 void Floppy::initAttach() {
@@ -177,6 +302,8 @@ bool Floppy::allocateBufferForChannel(uint8_t channel) {
 }
 
 void Floppy::releaseBufferForChannel(uint8_t channel) {
+  verifyMapLoadAgainstHostRam(channel);
+  clearSeqChannel(channel);
   uint8_t bnr = channels[channel].buffernr;
   if (bnr >= 5) {
     return;
@@ -189,11 +316,38 @@ void Floppy::releaseBufferForChannel(uint8_t channel) {
   channels[channel].buffernr = 0xff;
 }
 
+bool Floppy::mediaReadSector(uint8_t track, uint8_t sector, uint8_t *buf) {
+  if (!buf) {
+    return false;
+  }
+  if (True1541::isActive() && disk_present()) {
+    return disk_image_read_sector(track, sector, buf);
+  }
+  if (!d64file || !d64file->seek(calcOffset(track, sector), SEEK_SET)) {
+    return false;
+  }
+  return d64file->read(buf, 256) == 256;
+}
+
+bool Floppy::mediaWriteSector(uint8_t track, uint8_t sector,
+                              const uint8_t *buf) {
+  if (!buf) {
+    return false;
+  }
+  if (True1541::isActive() && disk_present()) {
+    return disk_image_write_sector(track, sector, buf);
+  }
+  if (!d64file || !d64file->seek(calcOffset(track, sector), SEEK_SET)) {
+    return false;
+  }
+  return d64file->write(buf, 256) == 256;
+}
+
 bool Floppy::writeBufferToDisk(uint8_t bufferId) {
   if (!bufferMeta[bufferId].dirty) {
     return true;
   }
-  if (!d64attached || !d64file) {
+  if (!d64attached && !(True1541::isActive() && disk_present())) {
     return false;
   }
   const uint8_t t = bufferMeta[bufferId].track;
@@ -206,17 +360,10 @@ bool Floppy::writeBufferToDisk(uint8_t bufferId) {
     bufferMeta[bufferId].dirty = false;
     return true;
   }
-  int64_t off = calcOffset(t, s);
-  if (!d64file->seek(off, SEEK_SET)) {
-    PlatformManager::getInstance().log(LOG_ERROR, TAG,
-                                       "writeBuffer seek failed t=%d s=%d",
-                                       (int)t, (int)s);
-    return false;
-  }
   PlatformManager::getInstance().log(
-      LOG_INFO, TAG, "flush buffer %u → T=%u S=%u off=%ld", (unsigned)bufferId,
-      (unsigned)t, (unsigned)s, (long)off);
-  if (d64file->write(buffer[bufferId], 256) != 256) {
+      LOG_INFO, TAG, "flush buffer %u → T=%u S=%u", (unsigned)bufferId,
+      (unsigned)t, (unsigned)s);
+  if (!mediaWriteSector(t, s, buffer[bufferId])) {
     PlatformManager::getInstance().log(LOG_ERROR, TAG,
                                        "writeBuffer write failed");
     return false;
@@ -265,17 +412,9 @@ void Floppy::applyBamHeaderToDriveRam() {
 }
 
 bool Floppy::reloadBam() {
-  if (!d64file) {
-    return false;
-  }
-  if (!d64file->seek(calcOffset(18, 0), SEEK_SET)) {
+  if (!mediaReadSector(18, 0, buffer[4])) {
     PlatformManager::getInstance().log(LOG_ERROR, TAG,
-                                       "unsuccessful seek operation");
-    return false;
-  }
-  if (d64file->read(buffer[4], 256) == 0) {
-    PlatformManager::getInstance().log(LOG_ERROR, TAG,
-                                       "unsuccessful read operation");
+                                       "unsuccessful BAM read");
     return false;
   }
   if (buffer[4][0] == 0) {
@@ -284,7 +423,12 @@ bool Floppy::reloadBam() {
   dirTrack = buffer[4][0];
   dirSector = buffer[4][1];
 
-  int64_t filesize = d64file->size();
+  int64_t filesize = 0;
+  if (d64file) {
+    filesize = d64file->size();
+  } else if (True1541::isActive() && disk_present()) {
+    filesize = (int64_t)D64_STD_SIZE;
+  }
   uint8_t detectedTracks = (filesize == 196608) ? 40 : 35;
   freeBlocks = 0;
   for (uint8_t t = 1; t <= detectedTracks; t++) {
@@ -477,17 +621,8 @@ bool Floppy::readNextFileBlk() {
       setError(70);
       return true;
     }
-    if (!d64file->seek(calcOffset(track, sector), SEEK_SET)) {
-      lastStatus = 0x42;
-      setError(62);
-      return true;
-    }
-    // PlatformManager::getInstance().log(LOG_INFO, TAG,
-    //                                   "readNextFileBlk, currentSecondary=%d",
-    //                                    currentSecondary);
     uint8_t *buf = buffer[bnr];
-    uint16_t s = d64file->read(buf, 256);
-    if (s == 0) {
+    if (!mediaReadSector(track, sector, buf)) {
       track = 0;
       lastStatus = 0x40; // EOI
       return true;
@@ -723,12 +858,6 @@ bool Floppy::handleCmdChannel() {
           setError(65);
           return true;
         }
-        const int64_t off = calcOffset(track1, sector1);
-        if (!d64file->seek(off, SEEK_SET)) {
-          lastStatus = 0x02;
-          setError(66);
-          return true;
-        }
         uint8_t *buf = buffer[bnr];
         bufferMeta[bnr].track = track1;
         bufferMeta[bnr].sector = sector1;
@@ -736,33 +865,21 @@ bool Floppy::handleCmdChannel() {
         channels[secch1].isOpen = true;
         channels[secch1].rawBlock = true;
         if (cmd->command == "B-E") {
-          d64file->read(buf, kSectorBytes);
+          if (!mediaReadSector(track1, sector1, buf)) {
+            lastStatus = 0x02;
+            setError(66);
+            return true;
+          }
           PlatformManager::getInstance().log(LOG_INFO, TAG, "exeSubroutine %d",
                                              buf - ram);
           exeSubroutine(buf - ram);
           bufferMeta[bnr].dirty = true;
         } else if (isWrite) {
-          // Exact 256-byte sector image — write what is in the buffer, as-is.
           PlatformManager::getInstance().log(
-              LOG_INFO, TAG,
-              "sector WRITE %s ch=%u T=%u S=%u off=%ld idx=%u size=%u dirty=%d",
+              LOG_INFO, TAG, "sector WRITE %s ch=%u T=%u S=%u",
               cmd->command.c_str(), (unsigned)secch1, (unsigned)track1,
-              (unsigned)sector1, (long)off,
-              (unsigned)channels[secch1].bufferidx,
-              (unsigned)channels[secch1].buffersize,
-              (int)bufferMeta[bnr].dirty);
-          // Monitor payload: 16-byte rows so serial shows exactly what hits disk.
-          for (uint16_t row = 0; row < kSectorBytes; row += 16) {
-            PlatformManager::getInstance().log(
-                LOG_INFO, TAG,
-                "  %02x: %02x %02x %02x %02x %02x %02x %02x %02x "
-                "%02x %02x %02x %02x %02x %02x %02x %02x",
-                row, buf[row], buf[row + 1], buf[row + 2], buf[row + 3],
-                buf[row + 4], buf[row + 5], buf[row + 6], buf[row + 7],
-                buf[row + 8], buf[row + 9], buf[row + 10], buf[row + 11],
-                buf[row + 12], buf[row + 13], buf[row + 14], buf[row + 15]);
-          }
-          if (d64file->write(buf, kSectorBytes) != kSectorBytes) {
+              (unsigned)sector1);
+          if (!mediaWriteSector(track1, sector1, buf)) {
             lastStatus = 0x02;
             setError(25);
             return true;
@@ -771,21 +888,28 @@ bool Floppy::handleCmdChannel() {
           setError(0);
           lastStatus = 0;
         } else {
-          // Exact 256-byte sector into the channel buffer.
-          // U1/UA: pointer at 0. B-R: pointer at 2 (skip T/S link).
-          size_t got = d64file->read(buf, kSectorBytes);
-          channels[secch1].buffersize = (uint16_t)got;
-          channels[secch1].bufferidx =
-              ((cmd->command == "B-R") || (cmd->command == "B-E")) ? 2 : 0;
+          // Match VICE vdrive + 1541 ROM:
+          // U1/UA: bufptr=0, length=256 (full sector).
+          // B-R:   bufptr=1, length=buffer[0]+1 (ROM quirk / LSTCHR).
+          if (!mediaReadSector(track1, sector1, buf)) {
+            lastStatus = 0x02;
+            setError(66);
+            return true;
+          }
+          if (cmd->command == "B-R") {
+            channels[secch1].bufferidx = 1;
+            channels[secch1].buffersize =
+                (uint16_t)((uint16_t)buf[0] + 1u);
+            if (channels[secch1].buffersize > kSectorBytes) {
+              channels[secch1].buffersize = kSectorBytes;
+            }
+          } else {
+            channels[secch1].bufferidx = 0; // U1 / UA / B-E
+            channels[secch1].buffersize = kSectorBytes;
+          }
           bufferMeta[bnr].dirty = false;
           setError(0);
           lastStatus = 0;
-          PlatformManager::getInstance().log(
-              LOG_INFO, TAG,
-              "sector READ  T=%u S=%u got=%u "
-              "%02x %02x %02x %02x %02x %02x %02x %02x ...",
-              (unsigned)track1, (unsigned)sector1, (unsigned)got, buf[0],
-              buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
         }
       } else if (cmd->command == "B-P") {
         uint8_t secch1 = static_cast<uint8_t>(std::stoul(cmd->textArgs[0]));
@@ -862,10 +986,28 @@ uint8_t Floppy::iecin() {
     setError(62);
     return 0;
   }
+  // Linear PRG/SEQ prefetch: exact file bytes, EOI on last (no sector stitch).
+  if (channels[cursec].seqActive) {
+    const auto &data = channels[cursec].seqData;
+    if (channels[cursec].seqIdx >= data.size()) {
+      lastStatus = 0x40;
+      return 0;
+    }
+    const uint8_t byte = data[channels[cursec].seqIdx++];
+    if (channels[cursec].seqIdx >= data.size()) {
+      lastStatus = 0x40; // EOI on last data byte
+    }
+    if (iecindebug) {
+      PlatformManager::getInstance().log(LOG_INFO, TAG, "iecin seq byte: %x",
+                                         byte);
+    }
+    return byte;
+  }
   // send bytes to the c64
   if (channels[cursec].bufferidx >= channels[cursec].buffersize) {
     if (channels[cursec].rawBlock) {
-      // Raw sector (U1 / B-R / OPEN "#"): no file T/S chain — EOI.
+      // VICE vdrive_iec_read: exhausted "#" → bufptr=1 + EOF.
+      channels[cursec].bufferidx = 1;
       lastStatus = 0x40;
       return 0;
     }
@@ -904,6 +1046,17 @@ uint8_t Floppy::iecin() {
   uint8_t *buf = buffer[channels[cursec].buffernr];
   uint8_t byte = buf[channels[cursec].bufferidx];
   channels[cursec].bufferidx++;
+  // EOI on the last data byte (real 1541 / VICE). For sequential PRG/SEQ only
+  // when this is the final chain sector (track link already 0). Mid-file
+  // sectors must not EOI or LOAD stops early.
+  if (channels[cursec].bufferidx >= channels[cursec].buffersize) {
+    if (channels[cursec].rawBlock) {
+      channels[cursec].bufferidx = 1;
+      lastStatus = 0x40;
+    } else if (d64attached && track == 0) {
+      lastStatus = 0x40;
+    }
+  }
   if (iecindebug) {
     PlatformManager::getInstance().log(LOG_INFO, TAG, "iecin byte: %x", byte);
   }
@@ -953,12 +1106,17 @@ void Floppy::iecout(uint8_t value) {
       uint8_t bnr = channels[currentSecondary].buffernr;
       if (bnr < 5) {
         uint16_t idx = channels[currentSecondary].bufferidx;
-        if (idx < 256) {
+        uint16_t lim = channels[currentSecondary].buffersize;
+        if (lim == 0 || lim > 256) {
+          lim = 256;
+          channels[currentSecondary].buffersize = 256;
+        }
+        if (idx < lim) {
           buffer[bnr][idx] = value;
-          channels[currentSecondary].bufferidx = (uint16_t)(idx + 1);
-          if (channels[currentSecondary].buffersize < idx + 1) {
-            channels[currentSecondary].buffersize = (uint16_t)(idx + 1);
-          }
+          uint16_t next = (uint16_t)(idx + 1);
+          // VICE: PRINT# into "#" wraps pointer to 0 at length (not 1).
+          channels[currentSecondary].bufferidx =
+              (next >= lim) ? 0 : next;
           if (bufferMeta[bnr].track >= 1) {
             bufferMeta[bnr].dirty = true;
           }
@@ -1003,8 +1161,11 @@ void Floppy::iecout(uint8_t value) {
             setError(0);
             channels[currentSecondary].isOpen = true;
             channels[currentSecondary].rawBlock = true;
-            channels[currentSecondary].bufferidx = 0;
-            channels[currentSecondary].buffersize = 0;
+            // VICE/1541 OPEN "#": bufptr=1, length=256 (firmware $cc0f).
+            // U1 sets ptr=0 after read; Ultima ID-write does B-P:2 0 before
+            // PRINT#. Do not force 0 here — that diverges from a real 1541.
+            channels[currentSecondary].bufferidx = 1;
+            channels[currentSecondary].buffersize = 256;
             uint8_t bnr = channels[currentSecondary].buffernr;
             if (bnr < 5) {
               memset(buffer[bnr], 0, 256);
@@ -1037,12 +1198,24 @@ void Floppy::iecout(uint8_t value) {
             lastStatus = 0x42; // file not found
             setError(62);
             channels[currentSecondary].isOpen = false;
+            clearSeqChannel(currentSecondary);
           } else {
             track = startTrack;
             sector = startSector;
             channels[currentSecondary].isOpen = true;
             channels[currentSecondary].bufferidx = 0;
             channels[currentSecondary].buffersize = 0;
+            // Prefetch full chain so MAP/PRG loads cannot skew across sectors.
+            if (!prefetchFileChain(currentSecondary, startTrack, startSector)) {
+              // Fall back to per-sector readNextFileBlk path.
+              clearSeqChannel(currentSecondary);
+              track = startTrack;
+              sector = startSector;
+            } else {
+              // Chain already consumed into seqData; mark EOF for legacy path.
+              track = 0;
+              sector = 0;
+            }
           }
         }
       } else { // "direct" load
@@ -1216,8 +1389,7 @@ bool Floppy::diskTitle(char out[17]) {
     return false;
   }
   // Refresh BAM so the title matches the currently attached image.
-  if (!d64file->seek(calcOffset(18, 0), SEEK_SET) ||
-      d64file->read(buffer[4], 256) == 0) {
+  if (!mediaReadSector(18, 0, buffer[4])) {
     return false;
   }
   for (uint8_t i = 0; i < 16; i++) {

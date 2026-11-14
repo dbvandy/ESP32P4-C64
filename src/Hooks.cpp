@@ -32,6 +32,8 @@ void Hooks::init(uint8_t *ram, C64Sys *cpu) {
 }
 
 bool Hooks::handlehooks(uint16_t pc) {
+  // Kernal IEC always uses Floppy hooks. In True 1541 mode Floppy reads/writes
+  // the shared True1541 D64 image; Ultima bit-bangs $DD00 on that same image.
   if (pc == IECINHOOK + 1) {
     uint8_t a = cpu->floppy.iecin();
     // PlatformManager::getInstance().log(LOG_INFO, TAG, "iecin hook: %x", a);

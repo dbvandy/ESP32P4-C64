@@ -49,6 +49,12 @@ private:
     bool isOpen = false;
     // True after OPEN "#" / U1 / B-R: buffer holds a raw sector, not a file chain.
     bool rawBlock = false;
+    // Contiguous PRG/SEQ payload (link bytes stripped). Avoids sector-stitch
+    // skew on large files like Ultima MAP* (4098 bytes → $1000).
+    bool seqActive = false;
+    uint16_t seqIdx = 0;
+    std::vector<uint8_t> seqData;
+    std::string seqName;
     uint16_t bufferidx;
     uint16_t buffersize;
   };
@@ -91,6 +97,10 @@ private:
     return off;
   }
 
+  // When True 1541 is active, use its in-memory D64 (one shared image).
+  bool mediaReadSector(uint8_t track, uint8_t sector, uint8_t *buf);
+  bool mediaWriteSector(uint8_t track, uint8_t sector, const uint8_t *buf);
+
   void initIterateDirectoryBlk() {
     track = dirTrack;
     sector = dirSector;
@@ -102,14 +112,9 @@ private:
   bool iterateDirectoryBlk(const std::string &filename, uint8_t *buf,
                            Callback cb) {
     if (track != 0) {
-      if (!d64file->seek(calcOffset(track, sector), SEEK_SET)) {
+      if (!mediaReadSector(track, sector, buf)) {
         PlatformManager::getInstance().log(LOG_ERROR, "Floppy",
-                                           "unsuccessful seek operation");
-        return false;
-      }
-      if (d64file->read(buf, 256) == 0) {
-        PlatformManager::getInstance().log(LOG_ERROR, "Floppy",
-                                           "unsuccessful read operation");
+                                           "unsuccessful sector read");
         return false;
       }
       track = buf[0];
@@ -155,6 +160,13 @@ private:
   // Push BAM disk ID into 1541 zero-page so mid-game swaps are visible.
   void applyBamHeaderToDriveRam();
   bool reloadBam();
+  // Walk PRG/SEQ chain into a contiguous buffer (no per-sector stitch).
+  bool prefetchFileChain(uint8_t channel, uint8_t startT, uint8_t startS);
+  void clearSeqChannel(uint8_t channel);
+  void verifyMapLoadAgainstHostRam(uint8_t channel);
+
+  // C64 RAM (for post-LOAD MAP verify). Set from C64Sys::init.
+  uint8_t *hostRam = nullptr;
 
 public:
   static std::unique_ptr<FileDriver> sysfile;
@@ -167,6 +179,7 @@ public:
   bool d64attached = false;
   uint8_t lastStatus = 0;
 
+  void setHostRam(uint8_t *ram) { hostRam = ram; }
   void init(uint8_t device);
   bool attach(const std::string &filename);
   void detach();

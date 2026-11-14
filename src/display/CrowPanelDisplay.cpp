@@ -37,6 +37,7 @@ static uint8_t gStickyMods = 0;
 static int gHighlight = -1;
 static char gAttachedDisk[17] = "";
 static uint8_t gDriveLedHold = 0;
+static std::atomic<bool> gTrue1541{false};
 
 Board *board() { return gBoard; }
 LCD *lcd() { return gLcd; }
@@ -108,6 +109,16 @@ void setAttachedDisk(const char *name) {
   requestKeyboardRedraw();
 }
 const char *attachedDisk() { return gAttachedDisk; }
+
+void setTrue1541(bool on) {
+  const bool cur = gTrue1541.load(std::memory_order_acquire);
+  if (cur == on) {
+    return;
+  }
+  gTrue1541.store(on, std::memory_order_release);
+  requestKeyboardRedraw();
+}
+bool true1541() { return gTrue1541.load(std::memory_order_acquire); }
 
 void pulseDriveActivity() {
   const bool wasOn = gDriveLedHold > 0;
@@ -737,6 +748,9 @@ void CrowPanelDisplay::drawKeyboardOverlay() {
       lab = "SET";
     } else if (k.kind == CrowKeyKind::ExtPad) {
       lab = CrowPanelSoftPad::profileLabel(CrowPanelSoftPad::activeProfile());
+    } else if (k.kind == CrowKeyKind::ExtTrue1541) {
+      // Label shows active mode; do not light the key.
+      lab = CrowPanelHw::true1541() ? "TRUE 1541" : "FAST 1541";
     }
     if (lab && lab[0]) {
       drawKeyGlyph(x + w / 2, y + h / 2, lab, ink, col);

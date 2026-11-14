@@ -26,6 +26,10 @@
 #include "Hooks.h"
 #include "SID.h"
 #include "VIC.h"
+#include "true1541/True1541.h"
+#if defined(BOARD_CROWPANEL_P4)
+#include "display/CrowPanelHw.h"
+#endif
 #include "joystick/JoystickDriver.h"
 #include "joystick/JoystickFactory.h"
 #include "keyboard/KeyboardDriver.h"
@@ -110,7 +114,8 @@ uint8_t C64Sys::getMem(uint16_t addr) {
     //    basic rom
     return basic_rom[addr - 0xa000];
   } else if ((!bankERAM) && (addr >= 0xe000)) {
-    // kernal rom
+    // kernal rom — keep SEI→BRK so Hooks/Floppy handle Kernal IEC (shared
+    // image with True1541 when true1541Mode is on).
     return kernal_rom[addr - 0xe000];
   } else if (bankDIO && (addr >= 0xd000) && (addr <= 0xdfff)) {
     // ** VIC **
@@ -195,6 +200,14 @@ uint8_t C64Sys::getMem(uint16_t addr) {
       uint8_t ciaidx = (addr - 0xdd00) % 0x10;
       if (ciaidx == 0x00) {
         uint8_t ddra = cia2.ciareg[0x02];
+        if (true1541Mode) {
+          // Ultima-style bit-bang polls $DD00 directly (bypasses Kernal hooks).
+          True1541::iecHostWrite(cia2.ciareg[0x00], ddra);
+          if (True1541::hostAtn() || True1541::motorOn()) {
+            True1541::runPhi2(48);
+          }
+          return True1541::iecHostRead(cia2.ciareg[0x00], ddra);
+        }
         return cia2.ciareg[0x00] | ~ddra;
       } else if (ciaidx == 0x01) {
         uint8_t ddrb = cia2.ciareg[0x03];
@@ -388,8 +401,19 @@ void C64Sys::setMem(uint16_t addr, uint8_t val) {
           vic.vicmem = 0x0000;
           break;
         }
-        // Force IEC lines idle — real bitbang is skipped via Hooks.
-        cia2.ciareg[ciaidx] = 0x94 | bank;
+        if (true1541Mode) {
+          // Honor real IEC outs so games can bit-bang the drive on $DD00.
+          uint8_t ddra = cia2.ciareg[0x02];
+          cia2.ciareg[ciaidx] =
+              (uint8_t)((cia2.ciareg[ciaidx] & ~ddra) | (val & ddra));
+          True1541::iecHostWrite(cia2.ciareg[ciaidx], ddra);
+          if (True1541::hostAtn() || True1541::motorOn()) {
+            True1541::runPhi2(96);
+          }
+        } else {
+          // Fast Floppy: force IEC lines idle — bitbang skipped via Hooks.
+          cia2.ciareg[ciaidx] = 0x94 | bank;
+        }
         // adapt VIC base addresses
         adaptVICBaseAddrs(true);
       } else {
@@ -831,6 +855,39 @@ void C64Sys::run() {
       adjustcycles = 0;
     }
 
+    // True 1541: run the drive while ATN or motor is active. Do NOT forceIdle
+    // here — ATN is clear during data bytes; cutting the motor mid-transfer
+    // corrupted Ultima maps. DOS turns the spindle off itself.
+    if (true1541Mode) {
+      static uint16_t dirtyIdleLines = 0;
+      True1541::iecHostWrite(cia2.ciareg[0x00], cia2.ciareg[0x02]);
+      const bool atn = True1541::hostAtn();
+      const bool motor = True1541::motorOn();
+      if (atn || motor) {
+        uint32_t driveCyc =
+            (uint32_t)(numofcyclestoexe > 0 ? numofcyclestoexe : 1);
+        // Extra drive time while the spindle is on so IEC byte transfers
+        // keep up (job trap makes sector I/O fast; serial still needs cycles).
+        if (motor) {
+          driveCyc *= 2u;
+        }
+        True1541::runPhi2(driveCyc);
+#if defined(BOARD_CROWPANEL_P4)
+        if (True1541::activityLed()) {
+          CrowPanelHw::pulseDriveActivity();
+        }
+#endif
+      }
+      if (True1541::isDirty() && !True1541::motorOn() && !True1541::hostAtn()) {
+        if (++dirtyIdleLines > 50) {
+          True1541::writeback();
+          dirtyIdleLines = 0;
+        }
+      } else {
+        dirtyIdleLines = 0;
+      }
+    }
+
     // sprite collision interrupt?
     if ((vic.vicreg[0x19] & 0x86) && (vic.vicreg[0x1a] & 6) && (!iflag)) {
       setPCToIntVec(getMem(0xfffe) + (getMem(0xffff) << 8), false);
@@ -912,6 +969,8 @@ void C64Sys::init(uint8_t *ram, const uint8_t *charrom) {
   }
   sid.init();
   floppy.init(8);
+  floppy.setHostRam(ram);
+  True1541::init();
   this->ram = ram;
   this->charrom = charrom;
   this->externalCmds = new ExternalCmds();

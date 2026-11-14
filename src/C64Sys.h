@@ -123,6 +123,8 @@ public:
   // set by class ExternalCmds
   uint8_t joystickmode;
   uint8_t kbjoystickmode;
+  // false = fast Floppy (Kernal IEC hooks); true = True 1541 hardware path
+  bool true1541Mode = false;
   bool deactivateTemp;
   bool debug;
   uint16_t debugstartaddr;
